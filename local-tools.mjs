@@ -119,3 +119,43 @@ export function prompts(profile,semantics,kind,edit){
  ];
 }
 
+export async function separateReferenceIcons(ref){
+ const source=await bitmap(ref.url,1200);
+ const {width:w,height:h}=source;
+ const image=pixels(source), mask=new Uint8Array(w*h), rowCounts=new Uint32Array(h);
+ for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+  const index=y*w+x,at=index*4;
+  const r=image.data[at],g=image.data[at+1],b=image.data[at+2],a=image.data[at+3];
+  if(a>32&&Math.min(r,g,b)<226){mask[index]=1;rowCounts[y]++;}
+ }
+ const runs=bands(h,y=>rowCounts[y]>=Math.max(3,Math.round(w*.007)));
+ const rows=runs.filter(([,height])=>height>=Math.max(9,h*.045));
+ const tallest=Math.max(0,...rows.map(([,height])=>height));
+ const cells=[];
+ for(const [y,height] of rows.filter(([,height])=>height>=tallest*.46)){
+  const column=new Uint32Array(w);
+  for(let j=y;j<y+height;j++)for(let x=0;x<w;x++)column[x]+=mask[j*w+x];
+  const groups=bands(w,x=>column[x]>0);
+  const joined=[];
+  for(const [x,width] of groups){
+   const last=joined.at(-1);
+   if(last&&x-last[0]-last[1]<height*.14)last[1]=x+width-last[0];
+   else joined.push([x,width]);
+  }
+  for(const [x,width] of joined.filter(([,width])=>width>=height*.38&&width<=height*2.3)){
+   if(width>=w*.7)continue;
+   cells.push([x,y,width,height]);
+  }
+ }
+ if(cells.length<2||cells.length>30)return [];
+ return cells.map(([x,y,width,height],index)=>{
+  const canvas=document.createElement('canvas');
+  canvas.width=canvas.height=384;
+  const scale=300/Math.max(width,height);
+  const g=canvas.getContext('2d');
+  g.fillStyle='#fff';g.fillRect(0,0,384,384);
+  g.drawImage(source,x,y,width,height,(384-width*scale)/2,(384-height*scale)/2,width*scale,height*scale);
+  const url=canvas.toDataURL('image/png');
+  return {id:crypto.randomUUID(),name:ref.name+' · 图标 '+(index+1),url,input:url,facts:{type:'image/png',width:384,height:384,bytes:Math.floor(url.length*.75)},derivedFrom:ref.id};
+ });
+}

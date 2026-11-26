@@ -1,4 +1,4 @@
-import {analyzeLocal,prepareImport,normalize,prompts} from './local-tools.mjs';
+import {analyzeLocal,prepareImport,normalize,prompts,separateReferenceIcons} from './local-tools.mjs';
 const blank={refs:[],profile:null,locked:null,version:0,icons:[],styles:[],failures:[]};
 const database=await new Promise(resolve=>{
  const request=indexedDB.open('icon-studio-original',1);
@@ -17,7 +17,7 @@ const imageMarkup=(ref,cls='')=>'<img class="'+cls+'" src="'+clean(ref.url)+'" a
 const btn=(name,label,value='',cls='secondary')=>'<button type="button" class="'+cls+'" data-original="'+name+'" data-value="'+clean(value)+'">'+label+'</button>';
 const fields={name:'风格名称',color:'色彩语言',shape:'造型语言',line:'线条语言',composition:'构图与比例',material:'材质与光影',distinct:'独特特征',prompt:'风格提示词',keep:'必须保留',flex:'允许变化',avoid:'禁止出现'};
 let direct=true;
-let quota=null, pending=[];
+let quota=null, pending=[], publicSitekey='', turnstileScript;
 const managedEndpoint=new URL('./ai-endpoint.json',import.meta.url);
 let root,access=sessionStorage.getItem('icon-studio-pilot')||'';
 const invitation=new URLSearchParams(location.hash.split('?')[1]).get('invite');
@@ -36,7 +36,6 @@ function save(){
 }
 function report(text){message=text;if(root?.isConnected)root.querySelector('.orig-status').textContent=text;}
 async function ask(route,payload,signal){
- if(!access)throw new Error('当前标签页未授权，请从本机私人测试快捷方式进入');
  const deadline=AbortSignal.timeout(route==='analyze'?25000:45000);
  const requestSignal=signal?AbortSignal.any([signal,deadline]):deadline;
  return requestAI(route,payload,requestSignal).catch(error=>{
@@ -51,27 +50,36 @@ async function requestAI(route,payload,signal){
  if(!configResponse.ok)throw new Error('无法读取云端服务配置');
  const config=await configResponse.json().catch(()=>null);
  if(typeof config?.url!=='string'||!config.url.startsWith('https://'))throw new Error('生成服务尚未发布');
- let body;
+ publicSitekey=typeof config.turnstileSitekey==='string'?config.turnstileSitekey:'';
+ const headers=access?{Authorization:'Bearer '+access}:{};
+ if(payload&&!access){
+  if(!publicSitekey)throw new Error('公开生成尚未启用');
+  headers['X-Turnstile-Token']=await verifyVisitor(signal);
+ }
+ let body;const submittedImages=[];
  if(payload){
   body=new FormData();
   body.set('id',payload.id||crypto.randomUUID());
   for(const url of (payload.references||[])){
    const view=await resample(url,480,undefined,true);
    const binary=/^data:image\/png;base64,/.test(url)&&Math.max(view.width,view.height)<512?url:view.url;
-   body.append('reference',await (await fetch(binary,{signal})).blob(),'reference.png');
+   const file=await (await fetch(binary,{signal})).blob();
+   if(file.size>=1100000)throw new Error('参考图太大，请先裁成单张图标');
+   body.append('reference',file,'reference.png');
+   if(route==='generate')submittedImages.push(binary);
   }
   if(payload.target){const url=(await resample(payload.target,480)).url;body.set('target',await (await fetch(url)).blob(),'target.png');}
   if(payload.profile)body.set('profile',JSON.stringify(payload.profile.confirmed||payload.profile));
   for(const field of ['semantic','edit'])if(payload[field])body.set(field,payload[field]);
  }
  const started=performance.now();
- const result=await fetch(config.url+'/api/'+route,{method:payload?'POST':'GET',headers:{Authorization:'Bearer '+access},body,signal});
+ const result=await fetch(config.url+'/api/'+route,{method:payload?'POST':'GET',headers,body,signal});
  const data=await result.json().catch(()=>null);
  console.info('Icon Studio AI 请求',{route,status:result.status,elapsedMs:Math.round(performance.now()-started),workerMs:data?.elapsedMs});
  if(!data)throw new Error('云端服务返回异常（HTTP '+result.status+'），请重试');
  if(!result.ok)throw Object.assign(new Error(data.error||'生成服务请求失败'),{status:result.status});
  quota=data.quota||(route==='status'?data:quota);
- return data;
+ return route==='generate'?{...data,submittedImages}:data;
 }
 function task(label,run){
  if(busy)return;
@@ -112,7 +120,7 @@ async function fileRef(file){
 function changeRefs(refs){state.refs=refs;state.representatives=(state.representatives||[]).filter(id=>refs.some(ref=>ref.id===id));state.profile=null;state.locked=null;save();draw();}
 async function files(list,replace){
  if(busy)return;
- const next=[...state.refs], errors=[];
+ const next=[...state.refs], errors=[];let automatic=[];
  for(const file of [...list].slice(0,replace?1:Math.max(0,6-next.length))){
   try{
    const ref=await fileRef(file);
@@ -120,7 +128,16 @@ async function files(list,replace){
    if(pos>=0)next[pos]=ref;else next.push(ref);
   }catch(error){errors.push(error.message);}
  }
- if(next.some((ref,index)=>ref!==state.refs[index]))changeRefs(next);
+  if(next.some((ref,index)=>ref!==state.refs[index])){
+  if(!replace&&list.length===1&&next.length<6){
+   const source=next.at(-1);
+   if(source.facts.width/source.facts.height>1.25){
+    try{const crops=await separateReferenceIcons(source);if(crops.length>=4)automatic=crops.slice(0,6-next.length);}catch{}
+   }
+  }
+  changeRefs([...next,...automatic]);
+  if(automatic.length){state.representatives=automatic.slice(0,3).map(item=>item.id);save();draw();return report('已从截图分离图标。请检查裁切，并选择需要使用的参考。');}
+ }
  report(errors.join('；')||(next.length===6?'已达到 6 张参考图上限':'参考图已就绪'));
 }
 function lockedSpec(snapshot){
@@ -140,7 +157,7 @@ function profileView(){
  return '<div class="orig-palette">'+draft.palette.map(v=>'<span style="--swatch:'+v+'">'+v+'</span>').join('')+'</div>'+(draft.source==='local'?'<small>浏览器直接测量。造型、材质和光影请手动确认。</small>'+localMeasurements(draft):'<small>模型推断可在下方修订并确认。文件属性见各参考图。</small>')+'<div class="orig-fields">'+Object.entries(fields).map(([key,label])=>'<label>'+label+'<textarea maxlength="1500" rows="'+(key==='name'?1:2)+'" '+(locked?'readonly ':'')+'data-original-field="profile" data-key="'+key+'">'+clean(draft.confirmed[key])+'</textarea></label>').join('')+'</div>'+(draft.inferred.extra?'<details><summary>其他推断</summary><pre>'+clean(JSON.stringify(draft.inferred.extra,null,2))+'</pre></details>':'')+btn('lock',locked?'解锁并修订':'确认并锁定', '', 'primary')+(locked?btn('save-style','保存原创风格'):'');
 }
 function referenceView(){
- return '<div class="orig-assets">'+state.refs.map(ref=>'<article>'+btn('ref',imageMarkup(ref)+'<span>'+clean(ref.name)+'</span>',ref.id,'orig-asset')+'<div class="orig-tools">'+btn('replace','替换',ref.id,'quiet')+btn('remove-ref','移除',ref.id,'quiet')+btn('reference-choice',effectiveRefs().includes(ref)?'已选参考':'选为参考',ref.id,'quiet')+'</div></article>').join('')+'</div>';
+ return '<div class="orig-assets">'+state.refs.map(ref=>'<article>'+btn('ref',imageMarkup(ref)+'<span>'+clean(ref.name)+'</span>',ref.id,'orig-asset')+'<div class="orig-tools">'+btn('replace','替换',ref.id,'quiet')+btn('remove-ref','移除',ref.id,'quiet')+(!ref.derivedFrom?btn('split-source','识别图标',ref.id,'quiet'):'')+btn('reference-choice',effectiveRefs().includes(ref)?'已选参考':'选为参考',ref.id,'quiet')+'</div></article>').join('')+'</div>';
 }
 function outputView(){
  if(view==='scene'){
@@ -154,17 +171,17 @@ function outputView(){
 function inspection(){
  const icon=byId(selected);
  if(!icon)return '<h2>图标属性</h2><p class="hint">选择生成结果，可检查一致性、局部修改或导出。</p>';
- return '<h2>图标属性</h2>'+imageMarkup({name:icon.semantic,url:icon.showOriginal&&icon.original?icon.original:icon.url},'orig-inspect')+'<strong>'+clean(icon.semantic)+'</strong><small>风格版本 '+(icon.snapshot?.version||'未绑定')+' · '+clean(icon.review?.status||'待检查')+'</small>'+(icon.review?.notes?'<p class="hint">'+clean(icon.review.notes)+'</p>':'')+(direct&&icon.snapshot?.references?.length?btn('evaluate','检查一致性'):'')+btn('confirm','标记为已确认')+'<label>局部修改<textarea maxlength="700" data-original-field="edit" placeholder="例如减少内部细节，保留材质与光影"></textarea></label>'+(direct&&icon.snapshot?.references?.length?btn('edit','应用修改')+btn('regenerate','重新生成'):btn('edit-prompt','构建局部修改提示词'))+(icon.original?btn('background-tool','调节去背景')+btn('toggle-original',icon.showOriginal?'查看透明结果':'查看原图'):'')+(icon.history?.length?btn('compare','查看版本与撤销'):'')+btn('adopt','添加为辅助参考')+btn('png','下载 PNG')+btn('remove-icon','删除图标');
+ return '<h2>图标属性</h2>'+imageMarkup({name:icon.semantic,url:icon.showOriginal&&icon.original?icon.original:icon.url},'orig-inspect')+'<strong>'+clean(icon.semantic)+'</strong><small>风格版本 '+(icon.snapshot?.version||'未绑定')+' · '+clean(icon.review?.status||'待检查')+'</small>'+(icon.review?.notes?'<p class="hint">'+clean(icon.review.notes)+'</p>':'')+(direct&&icon.snapshot?.references?.length?btn('evaluate','检查一致性'):'')+btn('confirm','标记为已确认')+'<label>局部修改<textarea maxlength="700" data-original-field="edit" placeholder="例如减少内部细节，保留材质与光影"></textarea></label>'+(direct&&icon.snapshot?.references?.length?btn('edit','应用修改')+btn('regenerate','重新生成'):btn('edit-prompt','构建局部修改提示词'))+(icon.original?btn('background-tool','调节去背景')+btn('toggle-original',icon.showOriginal?'查看透明结果':'查看原图'):'')+(icon.history?.length?btn('compare','查看版本与撤销'):'')+btn('adopt','添加为辅助参考')+btn('png','下载 PNG')+btn('remove-icon','删除图标')+(icon.audit?btn('request-audit','查看生成请求'):'');
 }
 function draw(){
  if(!root?.isConnected)return;
  const switched=root.dataset.initial!=='yes';
  root.dataset.initial='yes';
- root.innerHTML='<div class="workbar"><div class="row">'+btn('left',left?'收起风格':'展开风格','','quiet')+'<div class="segmented">'+btn('mode','高级辅助','local',!direct?'on':'')+btn('mode','AI 图标创作','direct',direct?'on':'')+'</div></div><div class="row"><a class="secondary small" href="#presets">使用系统预设</a>'+btn('right',right?'收起属性':'展开属性','','quiet')+'</div></div><div class="workspace original-workspace '+(!left?'hide-left ':'')+(!right?'hide-right':'')+'"><aside class="left-panel"><h2>风格基因</h2><label class="drop orig-drop" tabindex="0">＋ 上传参考图标<small>拖拽或选择 1–6 张 PNG、JPG、WEBP、SVG</small><input data-original-file type="file" accept=".png,.jpg,.jpeg,.webp,.svg" multiple hidden></label>'+btn('analyze',direct?'AI 分析原创风格':'本地分析参考图','','primary')+profileView()+(direct?(access?'<small>私人测试 · '+(quota?'今日可提交 '+quota.remainingGenerations+' 张 · 本站预留估算 '+quota.estimatedReserved+' Neurons':'正在读取额度')+'</small>':'<p class="hint">生成服务仅向受邀测试者开放。</p>'):'')+'</aside><section class="canvas '+background+'"><div class="canvas-top"><div class="segmented">'+btn('view','图标画布','grid',view==='grid'?'on':'')+btn('view','应用场景预览','scene',view==='scene'?'on':'')+'</div><div class="row">'+(view==='scene'?'<select data-original-field="scene" aria-label="应用场景">'+Object.keys(scenes).map(key=>'<option '+(scene===key?'selected':'')+'>'+key+'</option>').join('')+'</select>':'')+'<select aria-label="画布背景" data-original-field="background">'+[['light','浅色'],['dark','深色'],['transparent','透明']].map(([key,label])=>'<option value="'+key+'" '+(key===background?'selected':'')+'>'+label+'</option>').join('')+'</select>'+(!direct?btn('import','导入生成结果','','primary small')+btn('rename','批量重命名','','quiet'):'')+btn('zip','批量导出')+'</div></div><div class="canvas-body"><h2>我的原创参考图标</h2>'+referenceView()+(!state.refs.length?'<p class="hint">添加原创图标，建议使用 3–6 张同系列作品。</p>':'')+'<h2 class="orig-result-title">'+(direct?'AI 生成图标':'创作资产')+'</h2>'+outputView()+'</div><div class="command orig-command"><div class="command-head"><strong>'+(direct?'AI 图标创作':'图标需求与提示词')+'</strong><span role="status" class="orig-status">'+clean(busy?.label||message||(state.locked?'已锁定风格 · 版本 '+state.locked.version:storageError?'本地存储不可用':'上传参考图后即可生成'))+'</span></div><textarea data-original-field="command" maxlength="1000" rows="2" placeholder="例如生成宠物喂养、睡眠监测、城市骑行图标">'+clean(command)+'</textarea><div class="orig-tags">'+semantics.map((item,index)=>'<label><input maxlength="80" aria-label="图标语义 '+(index+1)+'" data-original-field="semantic" data-key="'+index+'" value="'+clean(item)+'">'+btn('remove-tag','×',index,'quiet')+'</label>').join('')+'</div><div class="orig-generate">'+btn('parse','提取语义','','quiet')+btn('add-tag','添加语义','','quiet')+(direct?'<label>候选 <select data-original-field="variants">'+[1,2,3].map(n=>'<option '+(n===variants?'selected':'')+'>'+n+'</option>').join('')+'</select></label>':'')+'<label>PNG <select data-original-field="size">'+[64,128,256,512,1024].map(n=>'<option '+(n===size?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+(direct?'<label><input type="checkbox" data-original-field="transparent" '+(transparent?'checked':'')+'> 透明背景</label>':'')+btn(busy?'cancel':direct?'generate':'prompt',busy?'取消':direct?'生成图标':'生成提示词','','primary small')+'</div></div></section><aside class="right-panel">'+inspection()+'</aside></div>';
+ root.innerHTML='<div class="workbar"><div class="row">'+btn('left',left?'收起风格':'展开风格','','quiet')+'<div class="segmented">'+btn('mode','高级辅助','local',!direct?'on':'')+btn('mode','AI 图标创作','direct',direct?'on':'')+'</div></div><div class="row"><a class="secondary small" href="#presets">使用系统预设</a>'+btn('right',right?'收起属性':'展开属性','','quiet')+'</div></div><div class="workspace original-workspace '+(!left?'hide-left ':'')+(!right?'hide-right':'')+'"><aside class="left-panel"><h2>风格基因</h2><label class="drop orig-drop" tabindex="0">＋ 上传参考图标<small>拖拽或选择 1–6 张 PNG、JPG、WEBP、SVG</small><input data-original-file type="file" accept=".png,.jpg,.jpeg,.webp,.svg" multiple hidden></label>'+btn('analyze',direct?'AI 分析原创风格':'本地分析参考图','','primary')+profileView()+(direct?((access||publicSitekey)?'<small>'+(access?'私人测试':'公开免费')+' · '+(quota?'今日剩余 AI 次数 '+quota.remainingGenerations+' 次 · 本站预留估算 '+quota.estimatedReserved+' Neurons':'正在读取额度')+'</small>':'<p class="hint">'+(publicSitekey?'公开免费使用 · 首次提交需通过安全验证':'正在检查公开生成服务')+'</p>'):'')+'</aside><section class="canvas '+background+'"><div class="canvas-top"><div class="segmented">'+btn('view','图标画布','grid',view==='grid'?'on':'')+btn('view','应用场景预览','scene',view==='scene'?'on':'')+'</div><div class="row">'+(view==='scene'?'<select data-original-field="scene" aria-label="应用场景">'+Object.keys(scenes).map(key=>'<option '+(scene===key?'selected':'')+'>'+key+'</option>').join('')+'</select>':'')+'<select aria-label="画布背景" data-original-field="background">'+[['light','浅色'],['dark','深色'],['transparent','透明']].map(([key,label])=>'<option value="'+key+'" '+(key===background?'selected':'')+'>'+label+'</option>').join('')+'</select>'+(!direct?btn('import','导入生成结果','','primary small')+btn('rename','批量重命名','','quiet'):'')+btn('zip','批量导出')+'</div></div><div class="canvas-body"><h2>我的原创参考图标</h2>'+referenceView()+(!state.refs.length?'<p class="hint">添加原创图标，建议使用 3–6 张同系列作品。</p>':'')+'<h2 class="orig-result-title">'+(direct?'AI 生成图标':'创作资产')+'</h2>'+outputView()+'</div><div class="command orig-command"><div class="command-head"><strong>'+(direct?'AI 图标创作':'图标需求与提示词')+'</strong><span role="status" class="orig-status">'+clean(busy?.label||message||(state.locked?'已锁定风格 · 版本 '+state.locked.version:storageError?'本地存储不可用':'上传参考图后即可生成'))+'</span></div><textarea data-original-field="command" maxlength="1000" rows="2" placeholder="例如生成宠物喂养、睡眠监测、城市骑行图标">'+clean(command)+'</textarea><div class="orig-tags">'+semantics.map((item,index)=>'<label><input maxlength="80" aria-label="图标语义 '+(index+1)+'" data-original-field="semantic" data-key="'+index+'" value="'+clean(item)+'">'+btn('remove-tag','×',index,'quiet')+'</label>').join('')+'</div><div class="orig-generate">'+btn('parse','提取语义','','quiet')+btn('add-tag','添加语义','','quiet')+(direct?'<label>候选 <select data-original-field="variants">'+[1,2,3].map(n=>'<option '+(n===variants?'selected':'')+'>'+n+'</option>').join('')+'</select></label>':'')+'<label>PNG <select data-original-field="size">'+[64,128,256,512,1024].map(n=>'<option '+(n===size?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+(direct?'<label><input type="checkbox" data-original-field="transparent" '+(transparent?'checked':'')+'> 透明背景</label>':'')+btn(busy?'cancel':direct?'generate':'prompt',busy?'取消':direct?'生成图标':'生成提示词','','primary small')+'</div></div></section><aside class="right-panel">'+inspection()+'</aside></div>';
  if(busy)root.querySelectorAll('[data-original]').forEach(button=>{if(!['cancel','left','right'].includes(button.dataset.original))button.disabled=true;});
  if(switched)root.querySelector('.original-workspace').animate([{opacity:.6},{opacity:1}],{duration:matchMedia('(prefers-reduced-motion: reduce)').matches?0:190});
 }
-export function mountOriginal(element){root=element;draw();if(access)ask('status').then(()=>{if(!busy)draw();}).catch(error=>report(error.message));}
+export function mountOriginal(element){root=element;draw();ask('status').then(()=>{if(!busy)draw();}).catch(error=>report(error.message));}
 export function originalLibrary(){return '<section class="collection orig-library"><h2>原创风格</h2><div class="gallery">'+(state.styles.map((item,index)=>'<article><div class="orig-library-images">'+item.references.slice(0,3).map(ref=>imageMarkup(ref)).join('')+'</div><h3>'+clean(item.confirmed.name||'原创风格')+'</h3><small>版本 '+item.version+'</small><div class="row">'+btn('load-style','使用',index)+btn('copy-style','复制',index)+btn('json','下载 JSON',index)+'</div></article>').join('')||'<p>锁定原创风格后，可在工作台保存。</p>')+'</div></section>';}
 export function originalAssets(){return '<section class="collection orig-library"><h2>原创生成资产</h2><div class="orig-assets">'+(state.icons.map(icon=>'<article>'+btn('open',imageMarkup({name:icon.semantic,url:icon.showOriginal&&icon.original?icon.original:icon.url})+'<span>'+clean(icon.semantic)+'</span>',icon.id,'orig-asset')+'</article>').join('')||'<p>原创模式生成的图标会出现在这里。</p>')+'</div></section>';}
 function show(title,body){const box=document.querySelector('#modal');box.innerHTML='<div class="dialog-head"><h2>'+title+'</h2>'+btn('close','关闭','','quiet')+'</div>'+body;if(!box.open)box.showModal();return box;}
@@ -196,8 +213,8 @@ async function batch(items,signal){
    state.failures=state.failures.filter(f=>f.id!==item.id&&f.id!==item.retryId);
    if(item.target){
     const icon=byId(item.target);
-    if(icon){icon.history=[...(icon.history||[]),{url:icon.url,original:icon.original,review:icon.review}].slice(-6);icon.url=result.image;icon.original=result.original;icon.showOriginal=false;icon.review=null;icon.model=result.model;}
-   }else state.icons.push({id:crypto.randomUUID(),semantic:item.semantic,snapshot:item.snapshot,url:result.image,original:result.original,model:result.model,transparent:item.transparent,elapsedMs:result.elapsedMs,history:[]});
+    if(icon){icon.history=[...(icon.history||[]),{url:icon.url,original:icon.original,review:icon.review}].slice(-6);icon.url=result.image;icon.original=result.original;icon.showOriginal=false;icon.review=null;icon.model=result.model;icon.audit=result.audit;icon.submittedImages=result.submittedImages;}
+   }else state.icons.push({id:crypto.randomUUID(),semantic:item.semantic,snapshot:item.snapshot,url:result.image,original:result.original,model:result.model,transparent:item.transparent,elapsedMs:result.elapsedMs,audit:result.audit,submittedImages:result.submittedImages,history:[]});
    pending[index].status='成功';save();
   }catch(error){
    if(error.name==='AbortError')throw error;
@@ -310,6 +327,21 @@ document.addEventListener('click',event=>{
   const replacements=modal.querySelector('#rename-list').value.split(/\r?\n/);
   state.icons.forEach((item,index)=>{const name=replacements[index]?.trim();if(name)item.semantic=name.slice(0,80);});save();modal.close();break;
  }
+ case 'split-source':{
+  const ref=state.refs.find(item=>item.id===value);
+  if(!ref)return;
+  task('正在识别截图内图标',async()=>{
+   const crops=await separateReferenceIcons(ref);
+   if(!crops.length)return report('未识别到独立图标，请点击原图手动框选');
+   const remaining=state.refs.filter(item=>item.derivedFrom!==ref.id);
+   const slots=6-remaining.length;
+   if(slots<1)return report('参考区已满，请先移除不需要的参考图');
+   const added=crops.slice(0,slots);
+   changeRefs([...remaining,...added]);
+   state.representatives=added.slice(0,3).map(item=>item.id);save();
+   report('已从截图分离 '+added.length+' 张图标，原图仍保留。请检查裁切并选择参考。');
+  });return;
+ }
  case 'reference-choice':{
   if(state.locked)return report('请先解锁风格，再更换生成参考');
   const ids=effectiveRefs().map(item=>item.id); const pos=ids.indexOf(value);
@@ -325,7 +357,7 @@ document.addEventListener('click',event=>{
    if(!direct){
     state.profile=await analyzeLocal(refs);save();report('本地分析完成，请确认视觉规范');return;
    }
-   if(!access)throw new Error('当前标签页未授权，请用私人测试快捷方式打开工作台');
+   
    try {
     state.profile=modelFields(await ask('analyze',{references:refs.map(item=>item.input)},signal));
     save();report('AI 分析完成，请确认视觉规范');
@@ -370,7 +402,6 @@ document.addEventListener('click',event=>{
   if(!command.trim())return report('请输入图标需求');
   semantics=simpleParse();message='已按标点拆分，请检查语义标签';break;
  case 'generate':{
-  if(!access)return report('当前标签页未授权，请用本机私人测试快捷方式进入');
   if(!effectiveRefs().length)return report('请先上传原创参考图');
   const snapshot=state.locked||{id:crypto.randomUUID(),version:0,references:effectiveRefs(),confirmed:state.profile?.confirmed||{name:'原创参考',keep:'以实际参考图为准，保留配色、形状和线条语言'}};
   if(!semantics.length)semantics=simpleParse();
@@ -398,6 +429,10 @@ document.addEventListener('click',event=>{
   task('正在添加辅助参考',async()=>{const data=await resample(item.url,768);changeRefs([...state.refs,{id:crypto.randomUUID(),name:item.semantic+' · 辅助参考',url:item.url,input:data.url,facts:{type:'image/png',bytes:Math.floor(item.url.length*.75),width:data.width,height:data.height}}]);});return;
  }
  case 'remove-icon':if(icon){state.icons=state.icons.filter(item=>item.id!==selected);state.failures=state.failures.filter(item=>item.target!==selected);selected='';save();}break;
+  case 'request-audit':if(icon?.audit){
+  const refs=icon.snapshot.references.filter(ref=>!icon.snapshot.selectedRefs||icon.snapshot.selectedRefs.includes(ref.id)).slice(0,3);
+  show('实际模型请求','<div class="orig-assets">'+(icon.submittedImages||[]).map((url,index)=>imageMarkup({name:refs[index]?.name||'模型参考图',url},'orig-inspect')).join('')+'</div><pre style="white-space:pre-wrap;overflow-wrap:anywhere">'+clean(JSON.stringify(icon.audit,null,2))+'</pre>');
+ }return;
  case 'toggle-original':if(icon){icon.showOriginal=!icon.showOriginal;save();}break;
  case 'background-tool':if(icon?.original)backgroundTool(icon);return;
  case 'png':if(icon)task('正在导出 PNG',async()=>{download(fileName(icon.semantic)+'-'+size+'.png',await png(icon));report('已导出 PNG');});return;
@@ -514,6 +549,44 @@ function backgroundTool(icon){
  box.querySelector('#background-inside').onchange=update;
  box.querySelector('#background-save').onclick=()=>{if(previewUrl){icon.url=previewUrl;icon.showOriginal=false;save();box.close();draw();report('已保存透明 PNG，原图已保留');}};
  update();
+}
+
+
+async function verifyVisitor(signal){
+ if(!turnstileScript){
+  turnstileScript=new Promise((resolve,reject)=>{
+   const script=document.createElement('script');
+   script.src='https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+   script.onload=()=>resolve(window.turnstile);
+   script.onerror=()=>{turnstileScript=null;script.remove();reject(new Error('安全验证加载失败，请检查网络后重试'));};
+   document.head.append(script);
+  });
+ }
+ return new Promise((resolve,reject)=>{
+  const box=document.createElement('dialog');
+  box.className='orig-security';
+  const title=document.createElement('h2');title.textContent='免费生成安全验证';
+  const area=document.createElement('div'),cancel=document.createElement('button');
+  cancel.textContent='取消';cancel.className='secondary small';
+  box.append(title,area,cancel);document.body.append(box);box.showModal();
+  let widget;
+  const finish=(error,token)=>{
+   signal?.removeEventListener('abort',abort);
+   if(widget!==undefined)window.turnstile?.remove(widget);
+   box.remove();
+   if(error)reject(error);else resolve(token);
+  };
+  const abort=()=>finish(new DOMException('已取消','AbortError'));
+  box.oncancel=event=>{event.preventDefault();abort();};
+  cancel.onclick=abort;
+  signal?.addEventListener('abort',abort,{once:true});
+  if(signal?.aborted){abort();return;}
+  turnstileScript.then(api=>{
+   if(!box.isConnected)return;
+   if(!api)throw new Error('安全验证未加载');
+   widget=api.render(area,{sitekey:publicSitekey,action:'icon-studio',callback:token=>finish(null,token),'error-callback':()=>finish(new Error('安全验证失败，请重试')),'expired-callback':()=>finish(new Error('安全验证已过期，请重试'))});
+  }).catch(error=>finish(error));
+ });
 }
 
 
