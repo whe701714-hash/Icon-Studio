@@ -1,8 +1,11 @@
+import {mountOriginal,originalLibrary,originalAssets} from './original.mjs';
 import {svg,styles,preset,shapes,demo} from './icons.mjs';
 const names=Object.keys(shapes);
+const displayNames={Home:'首页',Search:'搜索',Favorite:'收藏',Message:'消息',Profile:'个人中心',Settings:'设置',Cart:'购物车',Camera:'相机',Calendar:'日历',Location:'定位',Folder:'文件夹',Notification:'通知'};
+const nameLabel=value=>displayNames[value]||value;
 const featured=['Home','Search','Favorite','Message','Settings','Profile'];
 const fresh = name => ({id:crypto.randomUUID(),name,semantic:name,variant:0,history:[],favorite:false});
-const defaults={project:'Untitled icon set',profile:preset('round'),locked:null,version:0,icons:names.map(fresh),library:[],favorites:[],refs:[]};
+const defaults={project:'预设图标项目',profile:preset('round'),locked:null,version:0,icons:names.map(fresh),library:[],favorites:[],refs:[]};
 let state;
 try {state={...defaults,...JSON.parse(localStorage.getItem('icon-studio-v2'))};} catch {state=defaults;}
 const $=selector=>document.querySelector(selector);
@@ -16,7 +19,7 @@ const profile=()=>state.locked||state.profile;
 const styleOptions=styles.map(([id,label,name])=>[id,name+' · '+label]);
 const selected=new Set();
 let homeStyle='pop', filter='',query='', background='light', zoom=1, grid=24, guides=false, view='grid', scene='底部导航', left=matchMedia('(min-width: 871px)').matches,right=left, command='',quantity=1, job=null, dragged='', toastTimer;
-const scenes={'底部导航':['Home','Search','Favorite','Message','Profile'],'功能宫格':['Cart','Camera','Calendar','Location'],'设置列表':['Profile','Notification','Settings'],'桌面工具栏':['Folder','Search','Calendar','Camera'],'Dashboard':['Home','Folder','Message','Settings']};
+const scenes={'底部导航':['Home','Search','Favorite','Message','Profile'],'功能宫格':['Cart','Camera','Calendar','Location'],'设置列表':['Profile','Notification','Settings'],'桌面工具栏':['Folder','Search','Calendar','Camera'],'仪表盘':['Home','Folder','Message','Settings']};
 const save=()=>{try{localStorage.setItem('icon-studio-v2',JSON.stringify(state));}catch{notice('浏览器存储空间不足');}};
 function notice(message){$('#toast').textContent=message; $('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),2600);}
 const route=()=>location.hash.slice(1)||'home';
@@ -26,13 +29,16 @@ const glyph=(name,p,v=0)=>svg(name,p,v);
 const mark='<span class="mark" aria-hidden="true">✳</span>';
 function render(){
  const page=route(); const changed=!app.classList.contains('page-'+page);
- $('#nav').innerHTML='<a class="brand" href="#home">'+mark+'Icon Studio<span>.</span></a><nav aria-label="主导航">'+[['home','Home'],['studio','Studio'],['explore','Explore'],['styles','My Styles'],['icons','My Icons']].map(([key,label])=>'<a class="'+(key===page?'active':'')+'" href="#'+key+'">'+label+'</a>').join('')+'</nav><a class="nav-cta" href="#studio">Open Studio</a>';
+ $('#nav').innerHTML='<a class="brand" href="#home">'+mark+'Icon Studio<span>.</span></a><nav aria-label="主导航">'+[['home','首页'],['studio','创作工作台'],['explore','风格探索'],['styles','我的风格'],['icons','我的图标']].map(([key,label])=>'<a class="'+(key===page?'active':'')+'" href="#'+key+'">'+label+'</a>').join('')+'</nav><a class="nav-cta" href="#studio">进入工作台</a>';
  app.className='page-'+page+(changed?' entering':'');
- app.innerHTML=({home,studio,explore,stylesPage,iconsPage}[{styles:'stylesPage',icons:'iconsPage'}[page]||page]||home)();
+ if(page==='studio'){app.innerHTML='<section id="original"></section>';mountOriginal($('#original'));return;}
+ app.innerHTML=({home,presets:studio,explore,styles:stylesPage,icons:iconsPage}[page]||home)();
+ if(page==='styles')app.insertAdjacentHTML('beforeend',originalLibrary());
+ if(page==='icons')app.insertAdjacentHTML('beforeend',originalAssets());
 }
 function home(){
  const p=preset(homeStyle);
- return '<section class="hero"><div class="hero-grid" aria-hidden="true"></div><div class="hero-title"><p class="eyebrow"><span></span> THE ICON DESIGN STUDIO</p><h1><span>One Style.</span><span>Endless <em>Icons.</em></span></h1><p class="subtitle">定义一种风格，创造无限图标。</p><a class="primary" href="#studio">Start Creating</a></div><div class="artwork" aria-label="六种图标语义">'+featured.map((name,i)=>'<div class="art art-'+i+'" style="--i:'+i+'"><div class="art-tile" data-art="'+name+'">'+glyph(name,p)+'</div><span>'+name+'</span></div>').join('')+'</div><div class="style-strip"><span class="style-label">STYLE SWITCH</span><div class="chips">'+styles.map(([id,label])=>action('home-style',label,data(id),'chip '+(homeStyle===id?'on':''))).join('')+'</div><span id="home-demo">'+(demo(p)?'示例材质':'')+'</span></div></section><section class="home-next"><p class="eyebrow">THE STYLE GALLERY</p><h2>同一种语义，<br>不同的视觉语言。</h2><div class="gallery">'+styles.slice(0,4).map(card).join('')+'</div></section>';
+ return '<section class="hero"><div class="hero-grid" aria-hidden="true"></div><div class="hero-title"><p class="eyebrow"><span></span> 原创图标创作工作室</p><h1><span>一种风格，</span><span><em>无限图标。</em></span></h1><p class="subtitle">上传你的原创设计，让 AI 延续你的视觉语言，打造统一的图标系统。</p><a class="primary" href="#studio">开始创作</a></div><div class="artwork" aria-label="六种图标语义">'+featured.map((name,i)=>'<div class="art art-'+i+'" style="--i:'+i+'"><div class="art-tile" data-art="'+name+'">'+glyph(name,p)+'</div><span>'+nameLabel(name)+'</span></div>').join('')+'</div><div class="style-strip"><span class="style-label">风格切换</span><div class="chips">'+styles.map(([id,label])=>action('home-style',label,data(id),'chip '+(homeStyle===id?'on':''))).join('')+'</div><span id="home-demo">'+(demo(p)?'示例材质':'')+'</span></div></section><section class="home-next"><p class="eyebrow">风格展览</p><h2>同一种语义，<br>不同的视觉语言。</h2><div class="gallery">'+styles.slice(0,4).map(card).join('')+'</div></section>';
 }
 function card([id,label,name]){
  const p=preset(id);
@@ -40,47 +46,47 @@ function card([id,label,name]){
 }
 function explore(){
  const result=styles.filter(item=>(!filter||item[0]===filter)&&item.slice(1,3).join(' ').toLowerCase().includes(query.toLowerCase()));
- return '<section class="collection"><p class="eyebrow">THE STYLE GALLERY</p><h1>Explore.</h1><p>在成组图标中探索视觉语言。</p><div class="gallery-controls"><div class="chips">'+[['','全部'],...styles].map(([id,label])=>action('filter',label,data(id),'chip '+(filter===id?'on':''))).join('')+'</div><input data-field="search" type="search" placeholder="搜索风格" value="'+esc(query)+'" aria-label="搜索风格"></div><div class="gallery" id="gallery">'+(result.map(card).join('')||'<p>没有匹配的风格。</p>')+'</div></section>';
+ return '<section class="collection"><p class="eyebrow">风格展览</p><h1>风格探索</h1><p>在成组图标中探索视觉语言。</p><div class="gallery-controls"><div class="chips">'+[['','全部'],...styles].map(([id,label])=>action('filter',label,data(id),'chip '+(filter===id?'on':''))).join('')+'</div><input data-field="search" type="search" placeholder="搜索风格" value="'+esc(query)+'" aria-label="搜索风格"></div><div class="gallery" id="gallery">'+(result.map(card).join('')||'<p>没有匹配的风格。</p>')+'</div></section>';
 }
 function dna(p){
  return '<div class="dna" style="--tint:'+p.tint+'"><div class="dna-glyphs">'+featured.slice(0,3).map(n=>glyph(n,p)).join('')+'</div><div class="dna-bottom"><div><strong>'+esc(p.name)+'</strong><small>'+(p.version?'V'+p.version:'草稿')+' · '+p.label+'</small></div><div class="swatches"><i style="background:'+p.color+'"></i><i style="background:'+p.accent+'"></i><i style="background:'+p.tint+'"></i></div></div></div>';
 }
 function stylesPage(){
- return '<section class="collection"><p class="eyebrow">STYLE LIBRARY</p><h1>My Styles.</h1><div class="gallery">'+(state.library.map((p,i)=>'<article>'+dna(p)+'<div class="row">'+action('load-style','使用风格',data(i),'primary small')+action('copy-style','复制',data(i),'quiet')+action('style-json','JSON',data(i),'quiet')+'</div></article>').join('')||'<p>在 Studio 保存第一张风格基因卡。</p>')+'</div><h2>收藏风格</h2><div class="gallery">'+(styles.filter(([id])=>state.favorites.includes(id)).map(card).join('')||'<p>还没有收藏风格。</p>')+'</div></section>';
+ return '<section class="collection"><p class="eyebrow">风格库</p><h1>我的风格</h1><div class="gallery">'+(state.library.map((p,i)=>'<article>'+dna(p)+'<div class="row">'+action('load-style','使用风格',data(i),'primary small')+action('copy-style','复制',data(i),'quiet')+action('style-json','JSON',data(i),'quiet')+'</div></article>').join('')||'<p>在工作台保存第一张风格基因卡。</p>')+'</div><h2>收藏风格</h2><div class="gallery">'+(styles.filter(([id])=>state.favorites.includes(id)).map(card).join('')||'<p>还没有收藏风格。</p>')+'</div></section>';
 }
 function iconsPage(){
- return '<section class="collection"><p class="eyebrow">PROJECT LIBRARY</p><h1>My Icons.</h1><div class="row"><h2>'+esc(state.project)+'</h2><a class="primary small" href="#studio">打开项目</a></div><p>'+state.icons.length+' 个图标 · '+state.icons.filter(icon=>icon.favorite).length+' 个收藏</p><div class="library-grid">'+state.icons.map(i=>'<button data-action="open-icon" '+data(i.id)+'>'+glyph(i.semantic,iconProfile(i),i.variant)+'<span>'+esc(i.name)+'</span></button>').join('')+'</div></section>';
+ return '<section class="collection"><p class="eyebrow">项目资产</p><h1>我的图标</h1><div class="row"><h2>'+esc(state.project)+'</h2><a class="primary small" href="#presets">打开预设项目</a></div><p>'+state.icons.length+' 个图标 · '+state.icons.filter(icon=>icon.favorite).length+' 个收藏</p><div class="library-grid">'+state.icons.map(i=>'<button data-action="open-icon" '+data(i.id)+'>'+glyph(i.semantic,iconProfile(i),i.variant)+'<span>'+esc(nameLabel(i.name))+'</span></button>').join('')+'</div></section>';
 }
 function studio(){
- return '<div class="workbar"><div class="row">'+action('left','◧','aria-label="切换风格面板" aria-expanded="'+left+'"','quiet')+'<input class="project" data-field="project" aria-label="项目名称" value="'+esc(state.project)+'"><span class="muted project-status">本地项目</span></div><div class="row">'+action('export','导出','','primary small')+action('right','◨','aria-label="切换属性面板" aria-expanded="'+right+'"','quiet')+'</div></div><div class="workspace '+(!left?'hide-left ':'')+(!right?'hide-right':'')+'"><aside class="left-panel" '+(!left?'inert':'')+'>'+leftPanel()+'</aside><section class="canvas '+background+'" aria-label="Icon Canvas"><div class="canvas-top"><div class="segmented">'+action('view','Icon Grid',data('grid'),view==='grid'?'on':'')+action('view','UI Preview',data('ui'),view==='ui'?'on':'')+'</div><div class="row">'+(view==='grid'?select('zoom',[['0.8','紧凑'],['1','标准'],['1.25','放大']],String(zoom),'网格密度')+select('grid',['16','24','32','48'].map(v=>[v,v+' px']),String(grid),'设计网格')+action('guides','⊞','aria-label="规范辅助线" aria-pressed="'+guides+'"','quiet '+(guides?'on':'')):select('scene',Object.keys(scenes).map(v=>[v,v]),scene,'应用场景'))+select('background',[['light','浅色'],['dark','深色'],['transparent','透明']],background,'画布背景')+'</div></div><div class="canvas-body">'+(view==='grid'?iconGrid():uiPreview())+'</div>'+commandBar()+'</section><aside class="right-panel" '+(!right?'inert':'')+'>'+inspector()+'</aside></div>';
+ return '<div class="workbar"><div class="row">'+action('left','◧','aria-label="切换风格面板" aria-expanded="'+left+'"','quiet')+'<input class="project" data-field="project" aria-label="项目名称" value="'+esc(state.project)+'"><a class="secondary small" href="#studio">根据我的设计生成</a></div><div class="row">'+action('export','导出','','primary small')+action('right','◨','aria-label="切换属性面板" aria-expanded="'+right+'"','quiet')+'</div></div><div class="workspace '+(!left?'hide-left ':'')+(!right?'hide-right':'')+'"><aside class="left-panel" '+(!left?'inert':'')+'>'+leftPanel()+'</aside><section class="canvas '+background+'" aria-label="图标画布"><div class="canvas-top"><div class="segmented">'+action('view','图标网格',data('grid'),view==='grid'?'on':'')+action('view','应用场景预览',data('ui'),view==='ui'?'on':'')+'</div><div class="row">'+(view==='grid'?select('zoom',[['0.8','紧凑'],['1','标准'],['1.25','放大']],String(zoom),'网格密度')+select('grid',['16','24','32','48'].map(v=>[v,v+' px']),String(grid),'设计网格')+action('guides','⊞','aria-label="规范辅助线" aria-pressed="'+guides+'"','quiet '+(guides?'on':'')):select('scene',Object.keys(scenes).map(v=>[v,v]),scene,'应用场景'))+select('background',[['light','浅色'],['dark','深色'],['transparent','透明']],background,'画布背景')+'</div></div><div class="canvas-body">'+(view==='grid'?iconGrid():uiPreview())+'</div>'+commandBar()+'</section><aside class="right-panel" '+(!right?'inert':'')+'>'+inspector()+'</aside></div>';
 }
 function leftPanel(){
  const p=profile(), disabled=state.locked?'disabled':'';
- return '<div class="panel-title"><h2>Style DNA</h2><small>风格基因</small></div><label class="drop" id="drop" tabindex="0"><b>＋</b> 添加参考图<small>拖拽或选择本地图片</small><input id="upload" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" multiple hidden></label>'+(state.refs.length?'<div class="ref-list">'+state.refs.map((r,i)=>'<img alt="'+esc(r.name)+'" src="'+esc(r.url)+'">'+action('remove-ref','×',data(i)+' aria-label="移除参考图"','quiet')).join('')+'</div><small>参考图已预览 · AI 分析待接入</small>':'')+select('preset',styleOptions,p.id,'风格预设').replace('<select',state.locked?'<select disabled':'<select')+'<div id="dna">'+dna(p)+'</div><fieldset '+disabled+'><legend>色板与造型</legend><div class="color-controls">'+[['color','主色'],['accent','强调色'],['tint','背景色']].map(([k,l])=>'<label><input type="color" data-field="'+k+'" value="'+p[k]+'">'+l+'</label>').join('')+'</div><div class="row visual-controls"><label><span>线条</span><input type="range" min="1" max="4" step=".25" value="'+p.width+'" data-field="width"></label><label><span>比例</span><input type="range" min=".65" max="1.1" step=".05" value="'+p.scale+'" data-field="scale"></label></div><div class="row">'+action('corner','◯ 圆润',data('round')+' '+disabled,'chip '+(p.corner==='round'?'on':''))+action('corner','◇ 几何',data('sharp')+' '+disabled,'chip '+(p.corner==='sharp'?'on':''))+'</div></fieldset>'+(demo(p)?'<p class="hint">复杂材质 · 演示样例</p>':'')+'<div class="panel-actions">'+action('lock',state.locked?'解锁 Style Lock':'锁定 Style Lock','','primary')+action('save-style','保存风格','','secondary')+'</div>';
+ return '<div class="panel-title"><h2>风格基因</h2><small>风格基因</small></div><label class="drop" id="drop" tabindex="0"><b>＋</b> 添加参考图<small>拖拽或选择本地图片</small><input id="upload" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" multiple hidden></label>'+(state.refs.length?'<div class="ref-list">'+state.refs.map((r,i)=>'<img alt="'+esc(r.name)+'" src="'+esc(r.url)+'">'+action('remove-ref','×',data(i)+' aria-label="移除参考图"','quiet')).join('')+'</div><small>参考图已预览 · AI 分析待接入</small>':'')+select('preset',styleOptions,p.id,'风格预设').replace('<select',state.locked?'<select disabled':'<select')+'<div id="dna">'+dna(p)+'</div><fieldset '+disabled+'><legend>色板与造型</legend><div class="color-controls">'+[['color','主色'],['accent','强调色'],['tint','背景色']].map(([k,l])=>'<label><input type="color" data-field="'+k+'" value="'+p[k]+'">'+l+'</label>').join('')+'</div><div class="row visual-controls"><label><span>线条</span><input type="range" min="1" max="4" step=".25" value="'+p.width+'" data-field="width"></label><label><span>比例</span><input type="range" min=".65" max="1.1" step=".05" value="'+p.scale+'" data-field="scale"></label></div><div class="row">'+action('corner','◯ 圆润',data('round')+' '+disabled,'chip '+(p.corner==='round'?'on':''))+action('corner','◇ 几何',data('sharp')+' '+disabled,'chip '+(p.corner==='sharp'?'on':''))+'</div></fieldset>'+(demo(p)?'<p class="hint">复杂材质 · 演示样例</p>':'')+'<div class="panel-actions">'+action('lock',state.locked?'解锁 风格锁定':'锁定 风格锁定','','primary')+action('save-style','保存风格','','secondary')+'</div>';
 }
 function iconGrid(){
- return '<div class="canvas-heading"><h1>Icon Canvas</h1><span>'+state.icons.length+' icons</span></div><div class="icon-grid '+(guides?'guides':'')+'" style="--cell:'+Math.round(125*zoom)+'px;--asset:'+Math.round(grid*2.2*zoom)+'px">'+state.icons.map(i=>'<article draggable="true" data-icon="'+i.id+'" class="icon-cell '+(selected.has(i.id)?'selected':'')+'"><button class="icon-main" data-action="select" '+data(i.id)+' aria-pressed="'+selected.has(i.id)+'">'+glyph(i.semantic,iconProfile(i),i.variant)+'<span>'+esc(i.name)+'</span></button><div class="hover-tools">'+action('favorite-icon',i.favorite?'♥':'♡',data(i.id)+' aria-label="收藏"')+action('remix','⟳',data(i.id)+' aria-label="重混"')+action('duplicate','⧉',data(i.id)+' aria-label="复制"')+action('delete','×',data(i.id)+' aria-label="删除"')+'</div></article>').join('')+(job?'<div class="skeleton"></div>':'')+'</div>'+(state.icons.length?'':'<p>输入语义，生成第一组图标。</p>');
+ return '<div class="canvas-heading"><h1>图标画布</h1><span>'+state.icons.length+' 个图标</span></div><div class="icon-grid '+(guides?'guides':'')+'" style="--cell:'+Math.round(125*zoom)+'px;--asset:'+Math.round(grid*2.2*zoom)+'px">'+state.icons.map(i=>'<article draggable="true" data-icon="'+i.id+'" class="icon-cell '+(selected.has(i.id)?'selected':'')+'"><button class="icon-main" data-action="select" '+data(i.id)+' aria-pressed="'+selected.has(i.id)+'">'+glyph(i.semantic,iconProfile(i),i.variant)+'<span>'+esc(nameLabel(i.name))+'</span></button><div class="hover-tools">'+action('favorite-icon',i.favorite?'♥':'♡',data(i.id)+' aria-label="收藏"')+action('remix','⟳',data(i.id)+' aria-label="重混"')+action('duplicate','⧉',data(i.id)+' aria-label="复制"')+action('delete','×',data(i.id)+' aria-label="删除"')+'</div></article>').join('')+(job?'<div class="skeleton"></div>':'')+'</div>'+(state.icons.length?'':'<p>输入语义，生成第一组图标。</p>');
 }
 function uiPreview(){
  const labels={Home:'首页',Search:'搜索',Favorite:'收藏',Message:'消息',Profile:'我的',Cart:'购物车',Camera:'相机',Calendar:'日历',Location:'位置',Notification:'通知',Settings:'设置',Folder:'文件'};
- return '<div class="canvas-heading"><h1>UI Preview</h1><span>'+scene+'</span></div><div class="preview-stage"><div class="mock '+(scene==='底部导航'?'phone':scene==='桌面工具栏'||scene==='Dashboard'?'desktop':'mobile')+'"><div class="mock-title">'+scene+'</div><div class="mock-items '+(scene==='设置列表'||scene==='Dashboard'?'vertical':'')+'">'+scenes[scene].map(n=>{const i=state.icons.find(item=>item.semantic===n);return '<div>'+(i?glyph(i.semantic,iconProfile(i),i.variant):'<span class="empty-slot">—</span>')+'<span>'+labels[n]+'</span></div>';}).join('')+'</div></div></div>';
+ return '<div class="canvas-heading"><h1>应用场景预览</h1><span>'+scene+'</span></div><div class="preview-stage"><div class="mock '+(scene==='底部导航'?'phone':scene==='桌面工具栏'||scene==='仪表盘'?'desktop':'mobile')+'"><div class="mock-title">'+scene+'</div><div class="mock-items '+(scene==='设置列表'||scene==='仪表盘'?'vertical':'')+'">'+scenes[scene].map(n=>{const i=state.icons.find(item=>item.semantic===n);return '<div>'+(i?glyph(i.semantic,iconProfile(i),i.variant):'<span class="empty-slot">—</span>')+'<span>'+labels[n]+'</span></div>';}).join('')+'</div></div></div>';
 }
 function inspector(){
- const items=state.icons.filter(i=>selected.has(i.id)), p=profile(), start='<div class="panel-title"><h2>Inspector</h2><small>图标属性</small></div>';
+ const items=state.icons.filter(i=>selected.has(i.id)), p=profile(), start='<div class="panel-title"><h2>图标属性</h2><small>图标属性</small></div>';
  if(!items.length)return start+dna(p)+'<dl><dt>当前版本</dt><dd>'+(p.version?'V'+p.version:'未锁定')+'</dd><dt>项目资产</dt><dd>'+state.icons.length+' 个图标</dd><dt>设计网格</dt><dd>'+grid+' × '+grid+'</dd><dt>参考安全区</dt><dd>内缩 2 / 24</dd></dl><p class="hint">选择图标查看候选方案。Shift 或 Ctrl 点击可多选。</p>'+action('select-all','选择全部图标','','secondary');
- if(items.length>1)return start+'<h3>'+items.length+' 个图标</h3><label>名称前缀<input data-field="prefix" placeholder="例如 navigation"></label><label>分组名称<input data-field="group" placeholder="例如 底部导航"></label><div class="stack">'+action('style-switch','Style Switch','','secondary')+action('export','导出选区','','secondary')+action('delete-selected','删除选区','','secondary')+'</div>';
+ if(items.length>1)return start+'<h3>'+items.length+' 个图标</h3><label>名称前缀<input data-field="prefix" placeholder="例如 navigation"></label><label>分组名称<input data-field="group" placeholder="例如 底部导航"></label><div class="stack">'+action('style-switch','风格切换','','secondary')+action('export','导出选区','','secondary')+action('delete-selected','删除选区','','secondary')+'</div>';
  const i=items[0], ip=iconProfile(i);
- return start+'<div class="inspector-preview">'+glyph(i.semantic,ip,i.variant)+'</div><label>名称<input data-field="icon-name" '+data(i.id)+' value="'+esc(i.name)+'"></label><label>语义'+select('semantic',names.map(v=>[v,v]),i.semantic,'图标语义')+'</label><div class="section-label">Icon Remix <small>候选方案</small></div><div class="candidates">'+[0,1,2].map(v=>action('variant',glyph(i.semantic,ip,v),data(v)+' aria-label="候选 '+(v+1)+'"',i.variant===v?'on':'')).join('')+'</div><dl><dt>继承风格</dt><dd>'+esc(ip.name)+(ip.version?' · V'+ip.version:'')+'</dd><dt>描边</dt><dd>'+ip.width+'</dd>'+(i.group?'<dt>集合</dt><dd>'+esc(i.group)+'</dd>':'')+'</dl><div class="stack">'+action('remix','重新生成候选',data(i.id),'secondary')+action('style-switch','Style Switch','','secondary')+(i.history.length?action('compare','查看前后对比',data(i.id),'secondary'):'')+action('export','导出图标','','primary small')+'</div>';
+ return start+'<div class="inspector-preview">'+glyph(i.semantic,ip,i.variant)+'</div><label>名称<input data-field="icon-name" '+data(i.id)+' value="'+esc(nameLabel(i.name))+'"></label><label>语义'+select('semantic',names.map(v=>[v,nameLabel(v)]),i.semantic,'图标语义')+'</label><div class="section-label">图标重混 <small>候选方案</small></div><div class="candidates">'+[0,1,2].map(v=>action('variant',glyph(i.semantic,ip,v),data(v)+' aria-label="候选 '+(v+1)+'"',i.variant===v?'on':'')).join('')+'</div><dl><dt>继承风格</dt><dd>'+esc(ip.name)+(ip.version?' · V'+ip.version:'')+'</dd><dt>描边</dt><dd>'+ip.width+'</dd>'+(i.group?'<dt>集合</dt><dd>'+esc(i.group)+'</dd>':'')+'</dl><div class="stack">'+action('remix','重新生成候选',data(i.id),'secondary')+action('style-switch','风格切换','','secondary')+(i.history.length?action('compare','查看前后对比',data(i.id),'secondary'):'')+action('export','导出图标','','primary small')+'</div>';
 }
 const aliases={首页:'Home',主页:'Home',搜索:'Search',收藏:'Favorite',喜欢:'Favorite',消息:'Message',聊天:'Message',设置:'Settings',个人中心:'Profile',我的:'Profile',购物车:'Cart',相机:'Camera',日历:'Calendar',位置:'Location',定位:'Location',文件夹:'Folder',通知:'Notification'};
 function tokens(){
  const words=[...Object.entries(aliases),...names.map(n=>[n,n])];
  return [...new Set(words.flatMap(([word,value])=>{const index=command.toLowerCase().indexOf(word.toLowerCase());return index<0?[]:[[index,value]];}).sort((a,b)=>a[0]-b[0]).map(([,value])=>value))];
 }
-function tags(){return tokens().map(v=>action('remove-token',v+' ×',data(v),'token')).join('');}
+function tags(){return tokens().map(v=>action('remove-token',nameLabel(v)+' ×',data(v),'token')).join('');}
 function commandBar(){
  const p=profile();
- return '<div class="command"><div class="command-head"><strong>AI Command Bar</strong><span>'+(job?'正在生成 '+job.done+' / '+job.total:state.locked?esc(p.name)+' · V'+p.version:'SVG 本地生成 · AI 演示')+'</span></div><div id="tags" class="tags">'+tags()+'</div><div class="command-entry"><input data-field="command" placeholder="生成首页、搜索、收藏和消息图标…" aria-label="输入图标语义" value="'+esc(command)+'"><label class="attach" title="添加参考图" aria-label="添加参考图" for="upload">＋</label>'+select('quantity',[1,2,3].map(n=>[String(n),n+' 个候选']),String(quantity),'候选数量')+action(job?'cancel':'generate',job?'取消':'生成','','primary small')+'</div></div>';
+ return '<div class="command"><div class="command-head"><strong>创作指令</strong><span>'+(job?'正在生成 '+job.done+' / '+job.total:state.locked?esc(p.name)+' · V'+p.version:'本地 SVG 模板生成')+'</span></div><div id="tags" class="tags">'+tags()+'</div><div class="command-entry"><input data-field="command" placeholder="生成首页、搜索、收藏和消息图标…" aria-label="输入图标语义" value="'+esc(command)+'"><label class="attach" title="添加参考图" aria-label="添加参考图" for="upload">＋</label>'+select('quantity',[1,2,3].map(n=>[String(n),n+' 个候选']),String(quantity),'候选数量')+action(job?'cancel':'generate',job?'取消':'生成','','primary small')+'</div></div>';
 }
 const byId=id=>state.icons.find(icon=>icon.id===id);
 const update=()=>{save();render();};
@@ -92,7 +98,7 @@ const exportable=()=>scope().filter(i=>!demo(iconProfile(i)));
 const saveSvg=i=>download(i.name.replace(/[\\/:*?"<>|]/g,'-')+'.svg',glyph(i.semantic,iconProfile(i),i.variant).replace('viewBox','width="24" height="24" viewBox'),'image/svg+xml');
 function styleSwitch(value='flat'){
  const p=preset(value);
- dialog('Style Switch','<label>目标风格'+select('switch-target',styleOptions,value,'目标风格')+'</label><div class="comparison">'+[null,p].map((target,index)=>'<div><small>'+['切换前','切换后'][index]+'</small><div>'+scope().slice(0,6).map(i=>glyph(i.semantic,target||iconProfile(i),i.variant)).join('')+'</div></div>').join('')+'</div>'+(demo(p)?'<p>复杂材质仅提供示例预览。</p>':action('apply-switch','应用风格',data(value),'primary small')));
+ dialog('风格切换','<label>目标风格'+select('switch-target',styleOptions,value,'目标风格')+'</label><div class="comparison">'+[null,p].map((target,index)=>'<div><small>'+['切换前','切换后'][index]+'</small><div>'+scope().slice(0,6).map(i=>glyph(i.semantic,target||iconProfile(i),i.variant)).join('')+'</div></div>').join('')+'</div>'+(demo(p)?'<p>复杂材质仅提供示例预览。</p>':action('apply-switch','应用风格',data(value),'primary small')));
 }
 function record(i){i.history=[...i.history,{variant:i.variant,profile:{...iconProfile(i)},semantic:i.semantic}].slice(-12);}
 async function addFiles(files){
@@ -113,7 +119,7 @@ function generate(){
   const next=batch[task.done++];
   state.icons.push({...fresh(next.n),variant:next.variant,profile:{...p}});
   if(task.done===task.total){job=null;notice('已生成 '+task.total+' 个 SVG 图标');}
-  save();if(route()==='studio')render();
+  save();if(route()==='presets')render();
   if(job===task)setTimeout(step,170);
  };
  render();setTimeout(step,170);
@@ -130,9 +136,9 @@ document.addEventListener('click',e=>{
  }
  case 'filter':filter=v;break;
  case 'favorite-style':state.favorites=state.favorites.includes(v)?state.favorites.filter(x=>x!==v):[...state.favorites,v];break;
- case 'style-detail':{const p=preset(v);dialog(p.name,dna(p)+'<div class="detail-icons">'+names.map(n=>'<div>'+glyph(n,p)+'<small>'+n+'</small></div>').join('')+'</div><p>24 × 24 · '+p.label+(demo(p)?' · 示例材质':'')+'</p><div class="detail-icons detail-nav">'+featured.slice(0,5).map(n=>'<div>'+glyph(n,p)+'<small>'+n+'</small></div>').join('')+'</div>'+action('use-style','使用此风格',data(v),'primary small'));return;}
- case 'use-style':case 'load-style':state.profile={...(a==='use-style'?preset(v):state.library[Number(v)]),version:0};state.locked=null;close();go('studio');break;
- case 'copy-style':state.library.push({...state.library[Number(v)],name:state.library[Number(v)].name+' Copy'});break;
+ case 'style-detail':{const p=preset(v);dialog(p.name,dna(p)+'<div class="detail-icons">'+names.map(n=>'<div>'+glyph(n,p)+'<small>'+nameLabel(n)+'</small></div>').join('')+'</div><p>24 × 24 · '+p.label+(demo(p)?' · 示例材质':'')+'</p><div class="detail-icons detail-nav">'+featured.slice(0,5).map(n=>'<div>'+glyph(n,p)+'<small>'+nameLabel(n)+'</small></div>').join('')+'</div>'+action('use-style','使用此风格',data(v),'primary small'));return;}
+ case 'use-style':case 'load-style':state.profile={...(a==='use-style'?preset(v):state.library[Number(v)]),version:0};state.locked=null;close();go('presets');break;
+ case 'copy-style':state.library.push({...state.library[Number(v)],name:state.library[Number(v)].name+' 副本'});break;
  case 'style-json':download('style-profile.json',JSON.stringify(state.library[Number(v)],null,2),'application/json');return;
  case 'left':case 'right':{
   const side=a==='left'?'left':'right';if(side==='left')left=!left;else right=!right;
@@ -147,7 +153,7 @@ document.addEventListener('click',e=>{
   else {state.locked={...state.profile,version:++state.version,references:state.refs.map(r=>r.name),grid:24,safeInset:2,engine:demo(state.profile)?'sample':'svg-template'};notice('已锁定 V'+state.version);}
   break;
  case 'save-style':state.library.push({...profile()});notice('已保存风格基因卡');break;
- case 'open-icon':selected.clear();selected.add(v);right=true;go('studio');break;
+ case 'open-icon':selected.clear();selected.add(v);right=true;go('presets');break;
  case 'select':
   if(!e.shiftKey&&!e.ctrlKey&&!e.metaKey){const same=selected.size===1&&selected.has(v);selected.clear();if(!same)selected.add(v);}
   else if(selected.has(v))selected.delete(v);else selected.add(v);
@@ -156,7 +162,7 @@ document.addEventListener('click',e=>{
  case 'favorite-icon':if(i)i.favorite=!i.favorite;break;
  case 'remix':if(i&&!demo(iconProfile(i))){record(i);i.variant=(i.variant+1)%3;selected.clear();selected.add(v);right=true;}else notice('该材质仅展示样例');break;
  case 'variant':{const item=byId([...selected][0]);if(item&&!demo(iconProfile(item))){record(item);item.variant=Number(v);}else notice('该材质仅展示样例');break;}
- case 'duplicate':if(i)state.icons.splice(state.icons.indexOf(i)+1,0,{...i,id:crypto.randomUUID(),name:i.name+' Copy',history:[...i.history]});break;
+ case 'duplicate':if(i)state.icons.splice(state.icons.indexOf(i)+1,0,{...i,id:crypto.randomUUID(),name:i.name+' 副本',history:[...i.history]});break;
  case 'delete':selected.delete(v);state.icons=state.icons.filter(x=>x.id!==v);break;
  case 'delete-selected':state.icons=state.icons.filter(x=>!selected.has(x.id));selected.clear();break;
  case 'style-switch':styleSwitch();return;
@@ -166,7 +172,7 @@ document.addEventListener('click',e=>{
  case 'remove-token':command=tokens().filter(n=>n!==v).join('、');break;
  case 'generate':generate();return;
  case 'cancel':job=null;notice('生成已取消，已完成图标保留');break;
- case 'export':dialog('导出图标','<p>'+exportable().length+' 个可导出的原生 SVG</p><div class="row">'+action('export-svg','下载 SVG',exportable().length?'':'disabled','primary small')+action('export-json','Style Profile JSON','','secondary')+'</div>');return;
+ case 'export':dialog('导出图标','<p>'+exportable().length+' 个可导出的原生 SVG</p><div class="row">'+action('export-svg','下载 SVG',exportable().length?'':'disabled','primary small')+action('export-json','风格基因 JSON','','secondary')+'</div>');return;
  case 'export-svg':exportable().forEach(saveSvg);close();notice('已发起 SVG 下载');return;
  case 'export-json':download('style-profile.json',JSON.stringify(profile(),null,2),'application/json');close();notice('已发起 JSON 下载');return;
  case 'close':close();return;
@@ -189,7 +195,7 @@ document.addEventListener('change',e=>{
  if(!f)return;
  switch(f){
  case 'preset':if(!state.locked)state.profile=preset(v);break;
- case 'project':state.project=v.trim()||'Untitled icon set';break;
+ case 'project':state.project=v.trim()||'预设图标项目';break;
  case 'background':background=v;break;
  case 'scene':scene=v;break;
  case 'zoom':zoom=Number(v);break;

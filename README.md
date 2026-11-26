@@ -1,0 +1,24 @@
+# Icon Studio
+
+前端由 GitHub Pages 从 main 分支根目录发布。使用 Node.js 22 或更新版本运行 `node server.mjs` 可在本地预览。原创图标、参考图与风格保存在当前浏览器的 IndexedDB 中。
+
+## 独立 AI 服务
+
+把仓库部署到支持常驻 Node.js HTTP 进程的服务，启动命令为 `node server.mjs`。配置环境变量：
+
+| 变量 | 用途 |
+| --- | --- |
+| OPENAI_API_KEY | 开通计费并具备视觉和图像编辑模型权限的 OpenAI API 项目密钥 |
+| ICON_ACCESS_TOKEN | 自行生成的私密访问码，与 OpenAI 密钥分开，仅发给授权使用者 |
+| ICON_HOST | 部署时设为 0.0.0.0 |
+| PORT | 由托管平台提供 |
+| ICON_ALLOWED_ORIGINS | 线上设为 https://whe701714-hash.github.io，多来源用逗号分隔 |
+| ICON_VISION_MODEL | 可选，默认 gpt-4.1-mini |
+| ICON_IMAGE_MODEL | 可选，默认 gpt-image-1。替换时需确认支持多图编辑、PNG 和透明背景 |
+| ICON_REQUESTS_PER_MINUTE | 可选，默认每个进程每分钟 12 次 AI 操作，最多同时处理 2 次 |
+
+在工作台的「AI 服务连接」中填写 HTTPS 后端地址和访问码。模型密钥只填在后端托管平台的环境变量中。服务需要支持最长约 125 秒的请求和约 14 MB 的请求体。访问码用于私测，正式面向多人时应接入登录及按账户、跨实例的用量限制。
+
+分析使用 Responses API，生成与局部修改使用 Images Edits API。锁定参考图会作为图像直接发送；SVG 和超出模型输入限制的参考图会在浏览器中生成栅格输入，原文件仍用于预览和保存。模型生成 1024 × 1024 的 PNG，导出时按所选尺寸缩放。原生 SVG 由系统预设工作台提供。AI 输出保留为 PNG。
+
+原创参考、评估目标和待修订图像只有在执行 AI 操作时才发送。后端不将图像持久化到磁盘，也不把模型密钥暴露给静态客户端。

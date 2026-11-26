@@ -20,15 +20,15 @@ const alternates = {
  Profile:'M21 12a9 9 0 1 1-18 0 9 9 0 1 1 18 0ZM15 10a3 3 0 1 0-6 0 3 3 0 0 0 6 0ZM6 18q1-5 6-5t6 5'
 };
 export const styles = [
- ['round','线性','Soft Outline','#254aff','#b8c8ff','#e8edff'],
- ['flat','扁平','Solid Forms','#ff623f','#ffd5c6','#fff0e9'],
- ['pop','撞色','Color Clash','#2026ef','#ecff59','#eff6b9'],
- ['duo','双色','Soft Duotone','#794ccd','#d7befb','#f1e8fc'],
- ['gradient','渐变','Sunset Gradient','#ef435f','#ffae4b','#ffe8da'],
- ['clay','3D','Clay Objects','#ed7545','#ffc4a7','#fbe5d7'],
- ['glass','玻璃','Tinted Glass','#14888a','#a1e9db','#def8f1'],
- ['sketch','手绘','Ink Lines','#242629','#ffc0a9','#f5e9dc'],
- ['pixel','像素','Pixel Grid','#153f29','#a4e990','#e2f4d6']
+ ['round','线性','柔和线条','#254aff','#b8c8ff','#e8edff'],
+ ['flat','扁平','实心形态','#ff623f','#ffd5c6','#fff0e9'],
+ ['pop','撞色','高饱和彩形','#2026ef','#ecff59','#eff6b9'],
+ ['duo','双色','柔和双色','#794ccd','#d7befb','#f1e8fc'],
+ ['gradient','渐变','日落渐变','#ef435f','#ffae4b','#ffe8da'],
+ ['clay','3D','黏土模型','#ed7545','#ffc4a7','#fbe5d7'],
+ ['glass','玻璃','彩色玻璃','#14888a','#a1e9db','#def8f1'],
+ ['sketch','手绘','手绘墨线','#242629','#ffc0a9','#f5e9dc'],
+ ['pixel','像素','像素方格','#153f29','#a4e990','#e2f4d6']
 ];
 export const preset = key => {
  const [id,label,name,color,accent,tint] = styles.find(style => style[0]===key) || styles[0];
