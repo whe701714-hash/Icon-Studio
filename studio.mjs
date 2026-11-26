@@ -1,4 +1,4 @@
-import {mountOriginal,originalLibrary,originalAssets} from './original.mjs';
+import {mountOriginal,originalLibrary,originalAssets} from './original.mjs?v=20261126-fix2';
 import {svg,styles,preset,shapes,demo} from './icons.mjs';
 const names=Object.keys(shapes);
 const displayNames={Home:'首页',Search:'搜索',Favorite:'收藏',Message:'消息',Profile:'个人中心',Settings:'设置',Cart:'购物车',Camera:'相机',Calendar:'日历',Location:'定位',Folder:'文件夹',Notification:'通知'};

@@ -36,23 +36,39 @@ function save(){
 }
 function report(text){message=text;if(root?.isConnected)root.querySelector('.orig-status').textContent=text;}
 async function ask(route,payload,signal){
- if(!access)throw new Error('请从运营方发放的私人测试链接进入');
- const config=await fetch(managedEndpoint,{signal,cache:'no-store'}).then(response=>response.json());
- if(typeof config.url!=='string'||!config.url.startsWith('https://'))throw new Error('生成服务尚未发布');
+ if(!access)throw new Error('当前标签页未授权，请从本机私人测试快捷方式进入');
+ const deadline=AbortSignal.timeout(route==='analyze'?25000:45000);
+ const requestSignal=signal?AbortSignal.any([signal,deadline]):deadline;
+ return requestAI(route,payload,requestSignal).catch(error=>{
+  if(signal?.aborted)throw new DOMException('已取消','AbortError');
+  if(deadline.aborted)throw new Error('服务响应超时，请重试');
+  if(error.name==='TypeError')throw new Error('无法连接云端生成服务，请检查网络后重试');
+  throw error;
+ });
+}
+async function requestAI(route,payload,signal){
+ const configResponse=await fetch(managedEndpoint,{signal,cache:'no-store'});
+ if(!configResponse.ok)throw new Error('无法读取云端服务配置');
+ const config=await configResponse.json().catch(()=>null);
+ if(typeof config?.url!=='string'||!config.url.startsWith('https://'))throw new Error('生成服务尚未发布');
  let body;
  if(payload){
   body=new FormData();
   body.set('id',payload.id||crypto.randomUUID());
   for(const url of (payload.references||[])){
-   const view=(await resample(url,480)).url;
-   body.append('reference',await (await fetch(view)).blob(),'reference.png');
+   const view=await resample(url,480,undefined,true);
+   const binary=/^data:image\/png;base64,/.test(url)&&Math.max(view.width,view.height)<512?url:view.url;
+   body.append('reference',await (await fetch(binary,{signal})).blob(),'reference.png');
   }
   if(payload.target){const url=(await resample(payload.target,480)).url;body.set('target',await (await fetch(url)).blob(),'target.png');}
   if(payload.profile)body.set('profile',JSON.stringify(payload.profile.confirmed||payload.profile));
   for(const field of ['semantic','edit'])if(payload[field])body.set(field,payload[field]);
  }
+ const started=performance.now();
  const result=await fetch(config.url+'/api/'+route,{method:payload?'POST':'GET',headers:{Authorization:'Bearer '+access},body,signal});
- const data=await result.json();
+ const data=await result.json().catch(()=>null);
+ console.info('Icon Studio AI 请求',{route,status:result.status,elapsedMs:Math.round(performance.now()-started),workerMs:data?.elapsedMs});
+ if(!data)throw new Error('云端服务返回异常（HTTP '+result.status+'），请重试');
  if(!result.ok)throw Object.assign(new Error(data.error||'生成服务请求失败'),{status:result.status});
  quota=data.quota||(route==='status'?data:quota);
  return data;
@@ -63,18 +79,21 @@ function task(label,run){
  busy={label,controller};message='';draw();
  Promise.resolve().then(()=>run(controller.signal)).catch(error=>report(error.name==='AbortError'?'已取消等待，已完成的结果保留':error.message)).finally(()=>{busy=null;pending=[];draw();});
 }
-function resample(url,dimensions,region){
+function resample(url,dimensions,region,noUpscale=false){
  return new Promise((resolve,reject)=>{
   const img=new Image();
   img.onerror=()=>reject(new Error('无法解码图片，请检查文件格式'));
   img.onload=()=>{
+   try{
    const canvas=document.createElement('canvas');
    const [x,y,w,h]=region||[0,0,1,1];
    const sourceWidth=img.naturalWidth*w,sourceHeight=img.naturalHeight*h;
-   const scale=dimensions/Math.max(sourceWidth,sourceHeight);
+   const ratio=dimensions/Math.max(sourceWidth,sourceHeight);
+   const scale=noUpscale?Math.min(1,ratio):ratio;
    canvas.width=Math.max(1,Math.round(sourceWidth*scale));canvas.height=Math.max(1,Math.round(sourceHeight*scale));
    canvas.getContext('2d').drawImage(img,img.naturalWidth*x,img.naturalHeight*y,sourceWidth,sourceHeight,0,0,canvas.width,canvas.height);
    resolve({url:canvas.toDataURL('image/png'),width:img.naturalWidth,height:img.naturalHeight});
+   }catch{reject(new Error('浏览器无法处理该图片'));}
   };
   img.src=url;
  });
@@ -130,7 +149,7 @@ function outputView(){
    return '<div>'+(icon?imageMarkup({name:icon.semantic,url:icon.url},'scene-icon'):'<span>—</span>')+'<span>'+clean(icon?.semantic||semantic)+'</span></div>';
   }).join('')+'</div></div></div>';
  }
- return '<div class="orig-assets">'+pending.filter(item=>['等待','生成中'].includes(item.status)).map(item=>'<article class="orig-failed">'+clean(item.semantic)+' · '+item.status+'</article>').join('')+state.icons.map(icon=>'<article>'+btn('select',imageMarkup({name:icon.semantic,url:icon.showOriginal&&icon.original?icon.original:icon.url})+'<span>'+clean(icon.semantic)+'</span><small>'+clean(icon.review?.status||'待检查')+'</small>',icon.id,'orig-asset '+(icon.id===selected?'on':''))+'</article>').join('')+state.failures.map(f=>'<article class="orig-failed"><b>'+clean(f.semantic)+'</b><small>'+clean(f.error)+'</small>'+btn('retry','重试',f.id,'quiet')+'</article>').join('')+'</div>'+(!state.icons.length&&!state.failures.length?'<div class="orig-empty"><strong>让原创风格延伸到新的图标</strong><p>上传并锁定参考图，再输入语义生成图标。</p></div>':'');
+ return '<div class="orig-assets">'+pending.filter(item=>['等待','生成中'].includes(item.status)).map(item=>'<article class="orig-failed">'+clean(item.semantic)+' · '+item.status+'</article>').join('')+state.icons.map(icon=>'<article>'+btn('select',imageMarkup({name:icon.semantic,url:icon.showOriginal&&icon.original?icon.original:icon.url})+'<span>'+clean(icon.semantic)+'</span><small>'+clean(icon.review?.status||(icon.elapsedMs?'生成成功 · '+(icon.elapsedMs/1000).toFixed(2)+' 秒':'待检查'))+'</small>',icon.id,'orig-asset '+(icon.id===selected?'on':''))+'</article>').join('')+state.failures.map(f=>'<article class="orig-failed"><b>'+clean(f.semantic)+'</b><small>'+clean(f.error)+'</small>'+btn('retry','重试',f.id,'quiet')+'</article>').join('')+'</div>'+(!state.icons.length&&!state.failures.length?'<div class="orig-empty"><strong>让原创风格延伸到新的图标</strong><p>上传参考图后，输入语义即可生成。风格分析和锁定可选。</p></div>':'');
 }
 function inspection(){
  const icon=byId(selected);
@@ -141,7 +160,7 @@ function draw(){
  if(!root?.isConnected)return;
  const switched=root.dataset.initial!=='yes';
  root.dataset.initial='yes';
- root.innerHTML='<div class="workbar"><div class="row">'+btn('left',left?'收起风格':'展开风格','','quiet')+'<div class="segmented">'+btn('mode','高级辅助','local',!direct?'on':'')+btn('mode','AI 图标创作','direct',direct?'on':'')+'</div></div><div class="row"><a class="secondary small" href="#presets">使用系统预设</a>'+btn('right',right?'收起属性':'展开属性','','quiet')+'</div></div><div class="workspace original-workspace '+(!left?'hide-left ':'')+(!right?'hide-right':'')+'"><aside class="left-panel"><h2>风格基因</h2><label class="drop orig-drop" tabindex="0">＋ 上传参考图标<small>拖拽或选择 1–6 张 PNG、JPG、WEBP、SVG</small><input data-original-file type="file" accept=".png,.jpg,.jpeg,.webp,.svg" multiple hidden></label>'+btn('analyze',direct?'AI 分析原创风格':'本地分析参考图','','primary')+profileView()+(direct?(access?'<small>私人测试 · '+(quota?'今日可提交 '+quota.remainingGenerations+' 张 · 本站预留估算 '+quota.estimatedReserved+' Neurons':'正在读取额度')+'</small>':'<p class="hint">生成服务仅向受邀测试者开放。</p>'):'')+'</aside><section class="canvas '+background+'"><div class="canvas-top"><div class="segmented">'+btn('view','图标画布','grid',view==='grid'?'on':'')+btn('view','应用场景预览','scene',view==='scene'?'on':'')+'</div><div class="row">'+(view==='scene'?'<select data-original-field="scene" aria-label="应用场景">'+Object.keys(scenes).map(key=>'<option '+(scene===key?'selected':'')+'>'+key+'</option>').join('')+'</select>':'')+'<select aria-label="画布背景" data-original-field="background">'+[['light','浅色'],['dark','深色'],['transparent','透明']].map(([key,label])=>'<option value="'+key+'" '+(key===background?'selected':'')+'>'+label+'</option>').join('')+'</select>'+(!direct?btn('import','导入生成结果','','primary small')+btn('rename','批量重命名','','quiet'):'')+btn('zip','批量导出')+'</div></div><div class="canvas-body"><h2>我的原创参考图标</h2>'+referenceView()+(!state.refs.length?'<p class="hint">添加原创图标，建议使用 3–6 张同系列作品。</p>':'')+'<h2 class="orig-result-title">'+(direct?'AI 生成图标':'创作资产')+'</h2>'+outputView()+'</div><div class="command orig-command"><div class="command-head"><strong>'+(direct?'AI 图标创作':'图标需求与提示词')+'</strong><span role="status" class="orig-status">'+clean(busy?.label||message||(state.locked?'已锁定风格 · 版本 '+state.locked.version:storageError?'本地存储不可用':'等待确认风格'))+'</span></div><textarea data-original-field="command" maxlength="1000" rows="2" placeholder="例如生成宠物喂养、睡眠监测、城市骑行图标">'+clean(command)+'</textarea><div class="orig-tags">'+semantics.map((item,index)=>'<label><input maxlength="80" aria-label="图标语义 '+(index+1)+'" data-original-field="semantic" data-key="'+index+'" value="'+clean(item)+'">'+btn('remove-tag','×',index,'quiet')+'</label>').join('')+'</div><div class="orig-generate">'+btn('parse','提取语义','','quiet')+btn('add-tag','添加语义','','quiet')+(direct?'<label>候选 <select data-original-field="variants">'+[1,2,3].map(n=>'<option '+(n===variants?'selected':'')+'>'+n+'</option>').join('')+'</select></label>':'')+'<label>PNG <select data-original-field="size">'+[64,128,256,512,1024].map(n=>'<option '+(n===size?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+(direct?'<label><input type="checkbox" data-original-field="transparent" '+(transparent?'checked':'')+'> 透明背景</label>':'')+btn(busy?'cancel':direct?'generate':'prompt',busy?'取消':direct?'生成图标':'生成提示词','','primary small')+'</div></div></section><aside class="right-panel">'+inspection()+'</aside></div>';
+ root.innerHTML='<div class="workbar"><div class="row">'+btn('left',left?'收起风格':'展开风格','','quiet')+'<div class="segmented">'+btn('mode','高级辅助','local',!direct?'on':'')+btn('mode','AI 图标创作','direct',direct?'on':'')+'</div></div><div class="row"><a class="secondary small" href="#presets">使用系统预设</a>'+btn('right',right?'收起属性':'展开属性','','quiet')+'</div></div><div class="workspace original-workspace '+(!left?'hide-left ':'')+(!right?'hide-right':'')+'"><aside class="left-panel"><h2>风格基因</h2><label class="drop orig-drop" tabindex="0">＋ 上传参考图标<small>拖拽或选择 1–6 张 PNG、JPG、WEBP、SVG</small><input data-original-file type="file" accept=".png,.jpg,.jpeg,.webp,.svg" multiple hidden></label>'+btn('analyze',direct?'AI 分析原创风格':'本地分析参考图','','primary')+profileView()+(direct?(access?'<small>私人测试 · '+(quota?'今日可提交 '+quota.remainingGenerations+' 张 · 本站预留估算 '+quota.estimatedReserved+' Neurons':'正在读取额度')+'</small>':'<p class="hint">生成服务仅向受邀测试者开放。</p>'):'')+'</aside><section class="canvas '+background+'"><div class="canvas-top"><div class="segmented">'+btn('view','图标画布','grid',view==='grid'?'on':'')+btn('view','应用场景预览','scene',view==='scene'?'on':'')+'</div><div class="row">'+(view==='scene'?'<select data-original-field="scene" aria-label="应用场景">'+Object.keys(scenes).map(key=>'<option '+(scene===key?'selected':'')+'>'+key+'</option>').join('')+'</select>':'')+'<select aria-label="画布背景" data-original-field="background">'+[['light','浅色'],['dark','深色'],['transparent','透明']].map(([key,label])=>'<option value="'+key+'" '+(key===background?'selected':'')+'>'+label+'</option>').join('')+'</select>'+(!direct?btn('import','导入生成结果','','primary small')+btn('rename','批量重命名','','quiet'):'')+btn('zip','批量导出')+'</div></div><div class="canvas-body"><h2>我的原创参考图标</h2>'+referenceView()+(!state.refs.length?'<p class="hint">添加原创图标，建议使用 3–6 张同系列作品。</p>':'')+'<h2 class="orig-result-title">'+(direct?'AI 生成图标':'创作资产')+'</h2>'+outputView()+'</div><div class="command orig-command"><div class="command-head"><strong>'+(direct?'AI 图标创作':'图标需求与提示词')+'</strong><span role="status" class="orig-status">'+clean(busy?.label||message||(state.locked?'已锁定风格 · 版本 '+state.locked.version:storageError?'本地存储不可用':'上传参考图后即可生成'))+'</span></div><textarea data-original-field="command" maxlength="1000" rows="2" placeholder="例如生成宠物喂养、睡眠监测、城市骑行图标">'+clean(command)+'</textarea><div class="orig-tags">'+semantics.map((item,index)=>'<label><input maxlength="80" aria-label="图标语义 '+(index+1)+'" data-original-field="semantic" data-key="'+index+'" value="'+clean(item)+'">'+btn('remove-tag','×',index,'quiet')+'</label>').join('')+'</div><div class="orig-generate">'+btn('parse','提取语义','','quiet')+btn('add-tag','添加语义','','quiet')+(direct?'<label>候选 <select data-original-field="variants">'+[1,2,3].map(n=>'<option '+(n===variants?'selected':'')+'>'+n+'</option>').join('')+'</select></label>':'')+'<label>PNG <select data-original-field="size">'+[64,128,256,512,1024].map(n=>'<option '+(n===size?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+(direct?'<label><input type="checkbox" data-original-field="transparent" '+(transparent?'checked':'')+'> 透明背景</label>':'')+btn(busy?'cancel':direct?'generate':'prompt',busy?'取消':direct?'生成图标':'生成提示词','','primary small')+'</div></div></section><aside class="right-panel">'+inspection()+'</aside></div>';
  if(busy)root.querySelectorAll('[data-original]').forEach(button=>{if(!['cancel','left','right'].includes(button.dataset.original))button.disabled=true;});
  if(switched)root.querySelector('.original-workspace').animate([{opacity:.6},{opacity:1}],{duration:matchMedia('(prefers-reduced-motion: reduce)').matches?0:190});
 }
@@ -159,9 +178,12 @@ async function generate(item,signal){
  const result=await ask('generate',{...input,semantic,edit},signal);
  if(!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(result.image))throw new Error('服务未返回有效图像');
  if(signal.aborted)throw new DOMException('已取消','AbortError');
- if(!transparent)return {...result,original:result.image};
- const prepared=await prepareImport({url:result.image},{mode:'single',remove:true,tolerance:26,feather:true});
- return {...result,original:result.image,image:prepared.source.toDataURL('image/png')};
+ const asset={...result,original:result.image};
+ if(!transparent)return asset;
+ try{
+  const prepared=await prepareImport({url:result.image},{mode:'single',remove:true,tolerance:26,feather:true});
+  return {...asset,image:prepared.source.toDataURL('image/png')};
+ }catch{return {...asset,backgroundWarning:true};}
 }
 async function batch(items,signal){
  pending=items.map(item=>({...item,status:'等待'}));
@@ -175,7 +197,7 @@ async function batch(items,signal){
    if(item.target){
     const icon=byId(item.target);
     if(icon){icon.history=[...(icon.history||[]),{url:icon.url,original:icon.original,review:icon.review}].slice(-6);icon.url=result.image;icon.original=result.original;icon.showOriginal=false;icon.review=null;icon.model=result.model;}
-   }else state.icons.push({id:crypto.randomUUID(),semantic:item.semantic,snapshot:item.snapshot,url:result.image,original:result.original,model:result.model,transparent:item.transparent,history:[]});
+   }else state.icons.push({id:crypto.randomUUID(),semantic:item.semantic,snapshot:item.snapshot,url:result.image,original:result.original,model:result.model,transparent:item.transparent,elapsedMs:result.elapsedMs,history:[]});
    pending[index].status='成功';save();
   }catch(error){
    if(error.name==='AbortError')throw error;
@@ -348,12 +370,14 @@ document.addEventListener('click',event=>{
   if(!command.trim())return report('请输入图标需求');
   semantics=simpleParse();message='已按标点拆分，请检查语义标签';break;
  case 'generate':{
-  if(!state.locked)return report('请先分析并锁定原创风格');
+  if(!access)return report('当前标签页未授权，请用本机私人测试快捷方式进入');
+  if(!effectiveRefs().length)return report('请先上传原创参考图');
+  const snapshot=state.locked||{id:crypto.randomUUID(),version:0,references:effectiveRefs(),confirmed:state.profile?.confirmed||{name:'原创参考',keep:'以实际参考图为准，保留配色、形状和线条语言'}};
   if(!semantics.length)semantics=simpleParse();
   const items=[...new Set(semantics.map(item=>item.trim()).filter(Boolean))];
   if(!items.length)return report('至少需要一个有效语义');
   if(items.length*variants>6)return report('每批最多生成六张，可减少语义或候选数量');
-  const queue=items.flatMap(semantic=>Array.from({length:variants},()=>({id:crypto.randomUUID(),semantic,snapshot:state.locked,transparent})));
+  const queue=items.flatMap(semantic=>Array.from({length:variants},()=>({id:crypto.randomUUID(),semantic,snapshot,transparent})));
   task('准备生成 '+queue.length+' 个图标',signal=>batch(queue,signal));return;
  }
  case 'cancel':busy?.controller.abort();return;
