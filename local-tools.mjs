@@ -47,7 +47,7 @@ export async function analyzeLocal(references){
  const spans=measurements.filter(item=>item.transparent>0&&item.span>0).map(item=>item.span);
  return {palette,measurements,inferred:{},confirmed:{name:'原创风格',color:palette.join('、'),composition:spans.length?'参考长边占比约 '+Math.round(spans.reduce((a,b)=>a+b,0)/spans.length)+'%':''},source:'local'};
 }
-function clearBackground(data,tolerance,feather){
+export function clearBackground(data,tolerance,feather,interior){
  const {width:w,height:h,data:rgba}=data;
  const corners=[0,w-1,w*(h-1),w*h-1].filter(i=>rgba[i*4+3]>230);
  if(corners.length<3)return;
@@ -64,6 +64,7 @@ function clearBackground(data,tolerance,feather){
  }
  for(let x=0;x<w;x++){seed(x);seed(w*(h-1)+x);}
  for(let y=0;y<h;y++){seed(y*w);seed(y*w+w-1);}
+ if(interior){for(let i=0;i<w*h;i++)seed(i);return;}
  while(head<tail){const i=queue[head++];if(i%w)seed(i-1);if(i%w<w-1)seed(i+1);if(i>=w)seed(i-w);if(i<w*(h-1))seed(i+w);}
 }
 function bands(length,filled){
@@ -83,7 +84,7 @@ function alphaCells(data){
 }
 export async function prepareImport(ref,settings){
  const source=await bitmap(ref.url), context=source.getContext('2d'), data=pixels(source);
- if(settings.remove){clearBackground(data,settings.tolerance,settings.feather);context.putImageData(data,0,0);}
+ if(settings.remove){clearBackground(data,settings.tolerance,settings.feather,settings.interior);context.putImageData(data,0,0);}
  const {width:w,height:h}=source;
  let boxes=[[0,0,w,h]];
  if(settings.mode==='alpha')boxes=alphaCells(data);
@@ -117,3 +118,4 @@ export function prompts(profile,semantics,kind,edit){
   ['Use the attached original artwork as the primary visual reference.',task[1]+'.','Target concepts: '+(targets.map(item=>translated[item]||item).join(', ')||'as shown in the attached icon'),specs('en'),kind==='edit'?'Local changes: '+edit:'','Output a square image with a clearly legible subject and consistent padding, preferably as a transparent PNG.','Avoid text, watermarks, decorative frames, and materials or colors absent from the references.'+(p.avoid?' '+p.avoid:'')].filter(Boolean).join('\n')
  ];
 }
+

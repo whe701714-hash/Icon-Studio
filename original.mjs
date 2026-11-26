@@ -16,14 +16,17 @@ const clean=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':
 const imageMarkup=(ref,cls='')=>'<img class="'+cls+'" src="'+clean(ref.url)+'" alt="'+clean(ref.name)+'">';
 const btn=(name,label,value='',cls='secondary')=>'<button type="button" class="'+cls+'" data-original="'+name+'" data-value="'+clean(value)+'">'+label+'</button>';
 const fields={name:'风格名称',color:'色彩语言',shape:'造型语言',line:'线条语言',composition:'构图与比例',material:'材质与光影',distinct:'独特特征',prompt:'风格提示词',keep:'必须保留',flex:'允许变化',avoid:'禁止出现'};
-let direct=false;
-let root,settings=localStorage.getItem('icon-studio-api')||'',access=sessionStorage.getItem('icon-studio-access')||'';
+let direct=true;
+let quota=null, pending=[];
+const managedEndpoint=new URL('./ai-endpoint.json',import.meta.url);
+let root,access=sessionStorage.getItem('icon-studio-pilot')||'';
+const invitation=new URLSearchParams(location.hash.split('?')[1]).get('invite');
+if(invitation){access=invitation;sessionStorage.setItem('icon-studio-pilot',invitation);const cleanUrl=new URL(location.href);cleanUrl.hash='studio';history.replaceState(null,'',cleanUrl);}
 let selected='',command='',semantics=[],variants=1,size=256,transparent=true,busy=null,message='',left=matchMedia('(min-width: 871px)').matches,right=left,background='light',view='grid';
 const routes={analyze:'分析参考图',generate:'生成图标',evaluate:'检查一致性',semantics:'提取语义'};
 const scenes={底部导航:['首页','搜索','收藏','消息','我的'],功能宫格:['购物车','相机','日历','定位'],设置列表:['个人中心','通知','设置'],桌面工具栏:['文件夹','搜索','日历','相机'],仪表盘:['首页','文件夹','消息','设置']};
 let scene='底部导航';
 const byId=id=>state.icons.find(icon=>icon.id===id);
-const configure=()=>'<details class="orig-connect"><summary>AI 服务连接</summary><label>服务地址<input data-original-field="endpoint" type="url" placeholder="https://你的后端域名" value="'+clean(settings)+'"></label><label>服务访问码<input data-original-field="access" type="password" autocomplete="off" value="'+clean(access)+'"></label>'+btn('status','检查连接')+'<small>执行 AI 操作时，相关参考图会发送到配置的后端和 OpenAI。</small></details>';
 let storageError=false;
 function save(){
  if(!database){storageError=true;return;}
@@ -32,28 +35,33 @@ function save(){
  tx.objectStore('project').put(state,'current');
 }
 function report(text){message=text;if(root?.isConnected)root.querySelector('.orig-status').textContent=text;}
-function endpoint(){
- if(!settings&&['127.0.0.1','localhost'].includes(location.hostname))return location.origin;
- if(!settings)throw new Error('请先在「AI 服务连接」中配置服务地址和访问码');
- const url=new URL(settings);
- if(url.protocol!=='https:'&&!['127.0.0.1','localhost'].includes(url.hostname))throw new Error('AI 服务地址必须使用 HTTPS');
- return url.origin;
-}
 async function ask(route,payload,signal){
- const url=endpoint()+'/api/'+route;
- if(route!=='status'&&!access)throw new Error('请输入 AI 服务访问码');
- let response;
- try{response=await fetch(url,payload?{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+access},body:JSON.stringify(payload),signal}:{signal});}
- catch(error){if(error.name==='AbortError')throw error;throw new Error('无法连接 AI 服务，请检查地址、网络和跨域配置');}
- const body=await response.json().catch(()=>null);
- if(!response.ok||!body)throw new Error(body?.error||'AI 服务返回了无法读取的响应');
- return body;
+ if(!access)throw new Error('请从运营方发放的私人测试链接进入');
+ const config=await fetch(managedEndpoint,{signal,cache:'no-store'}).then(response=>response.json());
+ if(typeof config.url!=='string'||!config.url.startsWith('https://'))throw new Error('生成服务尚未发布');
+ let body;
+ if(payload){
+  body=new FormData();
+  body.set('id',payload.id||crypto.randomUUID());
+  for(const url of (payload.references||[])){
+   const view=(await resample(url,480)).url;
+   body.append('reference',await (await fetch(view)).blob(),'reference.png');
+  }
+  if(payload.target){const url=(await resample(payload.target,480)).url;body.set('target',await (await fetch(url)).blob(),'target.png');}
+  if(payload.profile)body.set('profile',JSON.stringify(payload.profile.confirmed||payload.profile));
+  for(const field of ['semantic','edit'])if(payload[field])body.set(field,payload[field]);
+ }
+ const result=await fetch(config.url+'/api/'+route,{method:payload?'POST':'GET',headers:{Authorization:'Bearer '+access},body,signal});
+ const data=await result.json();
+ if(!result.ok)throw new Error(data.error||'生成服务请求失败');
+ quota=data.quota||(route==='status'?data:quota);
+ return data;
 }
 function task(label,run){
  if(busy)return;
  const controller=new AbortController();
  busy={label,controller};message='';draw();
- Promise.resolve().then(()=>run(controller.signal)).catch(error=>report(error.name==='AbortError'?'已取消等待，已完成的结果保留':error.message)).finally(()=>{busy=null;draw();});
+ Promise.resolve().then(()=>run(controller.signal)).catch(error=>report(error.name==='AbortError'?'已取消等待，已完成的结果保留':error.message)).finally(()=>{busy=null;pending=[];draw();});
 }
 function resample(url,dimensions,region){
  return new Promise((resolve,reject)=>{
@@ -82,7 +90,7 @@ async function fileRef(file){
  if(raster.url.length>2700000)throw new Error('模型输入图像过大，请缩小后重试');
  return {id:crypto.randomUUID(),name:file.name,url,input:type==='image/svg+xml'?raster.url:(file.size<=2*1024*1024?url:raster.url),facts:{type,bytes:file.size,width:raster.width,height:raster.height}};
 }
-function changeRefs(refs){state.refs=refs;state.profile=null;state.locked=null;save();draw();}
+function changeRefs(refs){state.refs=refs;state.representatives=(state.representatives||[]).filter(id=>refs.some(ref=>ref.id===id));state.profile=null;state.locked=null;save();draw();}
 async function files(list,replace){
  if(busy)return;
  const next=[...state.refs], errors=[];
@@ -98,7 +106,7 @@ async function files(list,replace){
 }
 function lockedSpec(snapshot){
  const {references,measurements,...profile}=snapshot;
- return {references:references.map(ref=>ref.input),profile:{...profile,referenceNames:references.map(ref=>ref.name)}};
+ return {references:references.filter(ref=>!profile.selectedRefs||profile.selectedRefs.includes(ref.id)).slice(0,3).map(ref=>ref.input),profile:{...profile,referenceNames:references.map(ref=>ref.name)}};
 }
 function modelFields(data){
  const source=data.inference||{};
@@ -113,7 +121,7 @@ function profileView(){
  return '<div class="orig-palette">'+draft.palette.map(v=>'<span style="--swatch:'+v+'">'+v+'</span>').join('')+'</div>'+(draft.source==='local'?'<small>浏览器直接测量。造型、材质和光影请手动确认。</small>'+localMeasurements(draft):'<small>模型推断可在下方修订并确认。文件属性见各参考图。</small>')+'<div class="orig-fields">'+Object.entries(fields).map(([key,label])=>'<label>'+label+'<textarea maxlength="1500" rows="'+(key==='name'?1:2)+'" '+(locked?'readonly ':'')+'data-original-field="profile" data-key="'+key+'">'+clean(draft.confirmed[key])+'</textarea></label>').join('')+'</div>'+(draft.inferred.extra?'<details><summary>其他推断</summary><pre>'+clean(JSON.stringify(draft.inferred.extra,null,2))+'</pre></details>':'')+btn('lock',locked?'解锁并修订':'确认并锁定', '', 'primary')+(locked?btn('save-style','保存原创风格'):'');
 }
 function referenceView(){
- return '<div class="orig-assets">'+state.refs.map(ref=>'<article>'+btn('ref',imageMarkup(ref)+'<span>'+clean(ref.name)+'</span>',ref.id,'orig-asset')+'<div class="orig-tools">'+btn('replace','替换',ref.id,'quiet')+btn('remove-ref','移除',ref.id,'quiet')+'</div></article>').join('')+'</div>';
+ return '<div class="orig-assets">'+state.refs.map(ref=>'<article>'+btn('ref',imageMarkup(ref)+'<span>'+clean(ref.name)+'</span>',ref.id,'orig-asset')+'<div class="orig-tools">'+btn('replace','替换',ref.id,'quiet')+btn('remove-ref','移除',ref.id,'quiet')+btn('reference-choice',effectiveRefs().includes(ref)?'已选参考':'选为参考',ref.id,'quiet')+'</div></article>').join('')+'</div>';
 }
 function outputView(){
  if(view==='scene'){
@@ -122,51 +130,56 @@ function outputView(){
    return '<div>'+(icon?imageMarkup({name:icon.semantic,url:icon.url},'scene-icon'):'<span>—</span>')+'<span>'+clean(icon?.semantic||semantic)+'</span></div>';
   }).join('')+'</div></div></div>';
  }
- return '<div class="orig-assets">'+state.icons.map(icon=>'<article>'+btn('select',imageMarkup({name:icon.semantic,url:icon.url})+'<span>'+clean(icon.semantic)+'</span><small>'+clean(icon.review?.status||'待检查')+'</small>',icon.id,'orig-asset '+(icon.id===selected?'on':''))+'</article>').join('')+state.failures.map(f=>'<article class="orig-failed"><b>'+clean(f.semantic)+'</b><small>'+clean(f.error)+'</small>'+btn('retry','重试',f.id,'quiet')+'</article>').join('')+'</div>'+(!state.icons.length&&!state.failures.length?'<div class="orig-empty"><strong>让原创风格延伸到新的图标</strong><p>上传并锁定参考图，再构建提示词或导入生成结果。</p></div>':'');
+ return '<div class="orig-assets">'+pending.filter(item=>['等待','生成中'].includes(item.status)).map(item=>'<article class="orig-failed">'+clean(item.semantic)+' · '+item.status+'</article>').join('')+state.icons.map(icon=>'<article>'+btn('select',imageMarkup({name:icon.semantic,url:icon.showOriginal&&icon.original?icon.original:icon.url})+'<span>'+clean(icon.semantic)+'</span><small>'+clean(icon.review?.status||'待检查')+'</small>',icon.id,'orig-asset '+(icon.id===selected?'on':''))+'</article>').join('')+state.failures.map(f=>'<article class="orig-failed"><b>'+clean(f.semantic)+'</b><small>'+clean(f.error)+'</small>'+btn('retry','重试',f.id,'quiet')+'</article>').join('')+'</div>'+(!state.icons.length&&!state.failures.length?'<div class="orig-empty"><strong>让原创风格延伸到新的图标</strong><p>上传并锁定参考图，再输入语义生成图标。</p></div>':'');
 }
 function inspection(){
  const icon=byId(selected);
  if(!icon)return '<h2>图标属性</h2><p class="hint">选择生成结果，可检查一致性、局部修改或导出。</p>';
- return '<h2>图标属性</h2>'+imageMarkup({name:icon.semantic,url:icon.url},'orig-inspect')+'<strong>'+clean(icon.semantic)+'</strong><small>风格版本 '+(icon.snapshot?.version||'未绑定')+' · '+clean(icon.review?.status||'待检查')+'</small>'+(icon.review?.notes?'<p class="hint">'+clean(icon.review.notes)+'</p>':'')+(direct&&icon.snapshot?.references?.length?btn('evaluate','检查一致性'):'')+btn('confirm','标记为已确认')+'<label>局部修改<textarea maxlength="700" data-original-field="edit" placeholder="例如减少内部细节，保留材质与光影"></textarea></label>'+(direct&&icon.snapshot?.references?.length?btn('edit','应用修改')+btn('regenerate','重新生成'):btn('edit-prompt','构建局部修改提示词'))+(icon.history?.length?btn('compare','查看版本与撤销'):'')+btn('adopt','添加为辅助参考')+btn('png','下载 PNG')+btn('remove-icon','删除图标');
+ return '<h2>图标属性</h2>'+imageMarkup({name:icon.semantic,url:icon.showOriginal&&icon.original?icon.original:icon.url},'orig-inspect')+'<strong>'+clean(icon.semantic)+'</strong><small>风格版本 '+(icon.snapshot?.version||'未绑定')+' · '+clean(icon.review?.status||'待检查')+'</small>'+(icon.review?.notes?'<p class="hint">'+clean(icon.review.notes)+'</p>':'')+(direct&&icon.snapshot?.references?.length?btn('evaluate','检查一致性'):'')+btn('confirm','标记为已确认')+'<label>局部修改<textarea maxlength="700" data-original-field="edit" placeholder="例如减少内部细节，保留材质与光影"></textarea></label>'+(direct&&icon.snapshot?.references?.length?btn('edit','应用修改')+btn('regenerate','重新生成'):btn('edit-prompt','构建局部修改提示词'))+(icon.original?btn('background-tool','调节去背景')+btn('toggle-original',icon.showOriginal?'查看透明结果':'查看原图'):'')+(icon.history?.length?btn('compare','查看版本与撤销'):'')+btn('adopt','添加为辅助参考')+btn('png','下载 PNG')+btn('remove-icon','删除图标');
 }
 function draw(){
  if(!root?.isConnected)return;
  const switched=root.dataset.initial!=='yes';
  root.dataset.initial='yes';
- root.innerHTML='<div class="workbar"><div class="row">'+btn('left',left?'收起风格':'展开风格','','quiet')+'<div class="segmented">'+btn('mode','免配置创作','local',!direct?'on':'')+btn('mode','AI 直连创作','direct',direct?'on':'')+'</div></div><div class="row"><a class="secondary small" href="#presets">使用系统预设</a>'+btn('right',right?'收起属性':'展开属性','','quiet')+'</div></div><div class="workspace original-workspace '+(!left?'hide-left ':'')+(!right?'hide-right':'')+'"><aside class="left-panel"><h2>风格基因</h2><label class="drop orig-drop" tabindex="0">＋ 上传参考图标<small>拖拽或选择 1–6 张 PNG、JPG、WEBP、SVG</small><input data-original-file type="file" accept=".png,.jpg,.jpeg,.webp,.svg" multiple hidden></label>'+btn('analyze',direct?'AI 分析原创风格':'本地分析参考图','','primary')+profileView()+(direct?configure():'')+'</aside><section class="canvas '+background+'"><div class="canvas-top"><div class="segmented">'+btn('view','图标画布','grid',view==='grid'?'on':'')+btn('view','应用场景预览','scene',view==='scene'?'on':'')+'</div><div class="row">'+(view==='scene'?'<select data-original-field="scene" aria-label="应用场景">'+Object.keys(scenes).map(key=>'<option '+(scene===key?'selected':'')+'>'+key+'</option>').join('')+'</select>':'')+'<select aria-label="画布背景" data-original-field="background">'+[['light','浅色'],['dark','深色'],['transparent','透明']].map(([key,label])=>'<option value="'+key+'" '+(key===background?'selected':'')+'>'+label+'</option>').join('')+'</select>'+(!direct?btn('import','导入生成结果','','primary small')+btn('rename','批量重命名','','quiet'):'')+btn('zip','批量导出')+'</div></div><div class="canvas-body"><h2>我的原创参考图标</h2>'+referenceView()+(!state.refs.length?'<p class="hint">添加原创图标，建议使用 3–6 张同系列作品。</p>':'')+'<h2 class="orig-result-title">'+(direct?'AI 生成图标':'创作资产')+'</h2>'+outputView()+'</div><div class="command orig-command"><div class="command-head"><strong>'+(direct?'AI 创作指令':'图标需求与提示词')+'</strong><span role="status" class="orig-status">'+clean(busy?.label||message||(state.locked?'已锁定风格 · 版本 '+state.locked.version:storageError?'本地存储不可用':'等待确认风格'))+'</span></div><textarea data-original-field="command" maxlength="1000" rows="2" placeholder="例如生成宠物喂养、睡眠监测、城市骑行图标">'+clean(command)+'</textarea><div class="orig-tags">'+semantics.map((item,index)=>'<label><input maxlength="80" aria-label="图标语义 '+(index+1)+'" data-original-field="semantic" data-key="'+index+'" value="'+clean(item)+'">'+btn('remove-tag','×',index,'quiet')+'</label>').join('')+'</div><div class="orig-generate">'+btn('parse','提取语义','','quiet')+btn('add-tag','添加语义','','quiet')+(direct?'<label>候选 <select data-original-field="variants">'+[1,2,3].map(n=>'<option '+(n===variants?'selected':'')+'>'+n+'</option>').join('')+'</select></label>':'')+'<label>PNG <select data-original-field="size">'+[64,128,256,512,1024].map(n=>'<option '+(n===size?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+(direct?'<label><input type="checkbox" data-original-field="transparent" '+(transparent?'checked':'')+'> 透明背景</label>':'')+btn(busy?'cancel':direct?'generate':'prompt',busy?'取消':direct?'生成图标':'生成提示词','','primary small')+'</div></div></section><aside class="right-panel">'+inspection()+'</aside></div>';
+ root.innerHTML='<div class="workbar"><div class="row">'+btn('left',left?'收起风格':'展开风格','','quiet')+'<div class="segmented">'+btn('mode','高级辅助','local',!direct?'on':'')+btn('mode','AI 图标创作','direct',direct?'on':'')+'</div></div><div class="row"><a class="secondary small" href="#presets">使用系统预设</a>'+btn('right',right?'收起属性':'展开属性','','quiet')+'</div></div><div class="workspace original-workspace '+(!left?'hide-left ':'')+(!right?'hide-right':'')+'"><aside class="left-panel"><h2>风格基因</h2><label class="drop orig-drop" tabindex="0">＋ 上传参考图标<small>拖拽或选择 1–6 张 PNG、JPG、WEBP、SVG</small><input data-original-file type="file" accept=".png,.jpg,.jpeg,.webp,.svg" multiple hidden></label>'+btn('analyze',direct?'AI 分析原创风格':'本地分析参考图','','primary')+profileView()+(direct?(access?'<small>私人测试 · '+(quota?'今日可提交 '+quota.remainingGenerations+' 张 · 本站预留估算 '+quota.estimatedReserved+' Neurons':'正在读取额度')+'</small>':'<p class="hint">生成服务仅向受邀测试者开放。</p>'):'')+'</aside><section class="canvas '+background+'"><div class="canvas-top"><div class="segmented">'+btn('view','图标画布','grid',view==='grid'?'on':'')+btn('view','应用场景预览','scene',view==='scene'?'on':'')+'</div><div class="row">'+(view==='scene'?'<select data-original-field="scene" aria-label="应用场景">'+Object.keys(scenes).map(key=>'<option '+(scene===key?'selected':'')+'>'+key+'</option>').join('')+'</select>':'')+'<select aria-label="画布背景" data-original-field="background">'+[['light','浅色'],['dark','深色'],['transparent','透明']].map(([key,label])=>'<option value="'+key+'" '+(key===background?'selected':'')+'>'+label+'</option>').join('')+'</select>'+(!direct?btn('import','导入生成结果','','primary small')+btn('rename','批量重命名','','quiet'):'')+btn('zip','批量导出')+'</div></div><div class="canvas-body"><h2>我的原创参考图标</h2>'+referenceView()+(!state.refs.length?'<p class="hint">添加原创图标，建议使用 3–6 张同系列作品。</p>':'')+'<h2 class="orig-result-title">'+(direct?'AI 生成图标':'创作资产')+'</h2>'+outputView()+'</div><div class="command orig-command"><div class="command-head"><strong>'+(direct?'AI 图标创作':'图标需求与提示词')+'</strong><span role="status" class="orig-status">'+clean(busy?.label||message||(state.locked?'已锁定风格 · 版本 '+state.locked.version:storageError?'本地存储不可用':'等待确认风格'))+'</span></div><textarea data-original-field="command" maxlength="1000" rows="2" placeholder="例如生成宠物喂养、睡眠监测、城市骑行图标">'+clean(command)+'</textarea><div class="orig-tags">'+semantics.map((item,index)=>'<label><input maxlength="80" aria-label="图标语义 '+(index+1)+'" data-original-field="semantic" data-key="'+index+'" value="'+clean(item)+'">'+btn('remove-tag','×',index,'quiet')+'</label>').join('')+'</div><div class="orig-generate">'+btn('parse','提取语义','','quiet')+btn('add-tag','添加语义','','quiet')+(direct?'<label>候选 <select data-original-field="variants">'+[1,2,3].map(n=>'<option '+(n===variants?'selected':'')+'>'+n+'</option>').join('')+'</select></label>':'')+'<label>PNG <select data-original-field="size">'+[64,128,256,512,1024].map(n=>'<option '+(n===size?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+(direct?'<label><input type="checkbox" data-original-field="transparent" '+(transparent?'checked':'')+'> 透明背景</label>':'')+btn(busy?'cancel':direct?'generate':'prompt',busy?'取消':direct?'生成图标':'生成提示词','','primary small')+'</div></div></section><aside class="right-panel">'+inspection()+'</aside></div>';
  if(busy)root.querySelectorAll('[data-original]').forEach(button=>{if(!['cancel','left','right'].includes(button.dataset.original))button.disabled=true;});
  if(switched)root.querySelector('.original-workspace').animate([{opacity:.6},{opacity:1}],{duration:matchMedia('(prefers-reduced-motion: reduce)').matches?0:190});
 }
-export function mountOriginal(element){root=element;draw();}
+export function mountOriginal(element){root=element;draw();if(access)ask('status').then(()=>{if(!busy)draw();}).catch(error=>report(error.message));}
 export function originalLibrary(){return '<section class="collection orig-library"><h2>原创风格</h2><div class="gallery">'+(state.styles.map((item,index)=>'<article><div class="orig-library-images">'+item.references.slice(0,3).map(ref=>imageMarkup(ref)).join('')+'</div><h3>'+clean(item.confirmed.name||'原创风格')+'</h3><small>版本 '+item.version+'</small><div class="row">'+btn('load-style','使用',index)+btn('copy-style','复制',index)+btn('json','下载 JSON',index)+'</div></article>').join('')||'<p>锁定原创风格后，可在工作台保存。</p>')+'</div></section>';}
-export function originalAssets(){return '<section class="collection orig-library"><h2>原创生成资产</h2><div class="orig-assets">'+(state.icons.map(icon=>'<article>'+btn('open',imageMarkup({name:icon.semantic,url:icon.url})+'<span>'+clean(icon.semantic)+'</span>',icon.id,'orig-asset')+'</article>').join('')||'<p>原创模式生成的图标会出现在这里。</p>')+'</div></section>';}
+export function originalAssets(){return '<section class="collection orig-library"><h2>原创生成资产</h2><div class="orig-assets">'+(state.icons.map(icon=>'<article>'+btn('open',imageMarkup({name:icon.semantic,url:icon.showOriginal&&icon.original?icon.original:icon.url})+'<span>'+clean(icon.semantic)+'</span>',icon.id,'orig-asset')+'</article>').join('')||'<p>原创模式生成的图标会出现在这里。</p>')+'</div></section>';}
 function show(title,body){const box=document.querySelector('#modal');box.innerHTML='<div class="dialog-head"><h2>'+title+'</h2>'+btn('close','关闭','','quiet')+'</div>'+body;if(!box.open)box.showModal();return box;}
 function simpleParse(){
  return command.trim().replace(/^.*?(?:请生成|生成|绘制|设计)\s*/,'').replace(/图标(?:[，。,.；;].*)?$/,'').split(/[、，,；;\n]|(?:以及|和|与)/).map(v=>v.trim().replace(/[。.!！]$/,'')).filter(Boolean).slice(0,16);
 }
 async function generate(item,signal){
  const {snapshot,semantic,previous,edit,transparent}=item;
- const input=lockedSpec(snapshot);
+ const input={...lockedSpec(snapshot),id:item.id};
  if(previous)input.target=(await resample(previous,768)).url;
- const result=await ask('generate',{...input,semantic,transparent,edit},signal);
- if(!/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(result.image))throw new Error('服务未返回有效 PNG');
+ const result=await ask('generate',{...input,semantic,edit},signal);
+ if(!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/.test(result.image))throw new Error('服务未返回有效图像');
  if(signal.aborted)throw new DOMException('已取消','AbortError');
- return result;
+ if(!transparent)return {...result,original:result.image};
+ const prepared=await prepareImport({url:result.image},{mode:'single',remove:true,tolerance:26,feather:true});
+ return {...result,original:result.image,image:prepared.source.toDataURL('image/png')};
 }
 async function batch(items,signal){
+ pending=items.map(item=>({...item,status:'等待'}));
  for(const [index,item] of items.entries()){
   if(signal.aborted)throw new DOMException('已取消','AbortError');
+  pending[index].status='生成中';draw();
   report('正在生成 '+(index+1)+' / '+items.length+' · '+item.semantic);
   try{
    const result=await generate(item,signal);
-   state.failures=state.failures.filter(f=>f.id!==item.id);
+   state.failures=state.failures.filter(f=>f.id!==item.id&&f.id!==item.retryId);
    if(item.target){
     const icon=byId(item.target);
-    if(icon){icon.history=[...(icon.history||[]),{url:icon.url,review:icon.review}].slice(-6);icon.url=result.image;icon.review=null;icon.model=result.model;}
-   }else state.icons.push({id:crypto.randomUUID(),semantic:item.semantic,snapshot:item.snapshot,url:result.image,model:result.model,transparent:item.transparent,history:[]});
-   save();
+    if(icon){icon.history=[...(icon.history||[]),{url:icon.url,original:icon.original,review:icon.review}].slice(-6);icon.url=result.image;icon.original=result.original;icon.showOriginal=false;icon.review=null;icon.model=result.model;}
+   }else state.icons.push({id:crypto.randomUUID(),semantic:item.semantic,snapshot:item.snapshot,url:result.image,original:result.original,model:result.model,transparent:item.transparent,history:[]});
+   pending[index].status='成功';save();
   }catch(error){
    if(error.name==='AbortError')throw error;
+   pending[index].status='失败';
    state.failures=[...state.failures.filter(f=>f.id!==item.id),{...item,error:error.message}];save();
   }
   draw();report('已处理 '+(index+1)+' / '+items.length);
@@ -196,14 +209,14 @@ function zip(entries){
  return new Blob([...locals,...central,end],{type:'application/zip'});
 }
 let replacing='';
+const chosenRefs=()=>state.refs.filter(ref=>state.representatives?.includes(ref.id));
+function effectiveRefs(){const chosen=chosenRefs();return (chosen.length?chosen:state.refs).slice(0,3);}
 document.addEventListener('input',event=>{
  const el=event.target,f=el.dataset.originalField;
  if(!f)return;
  if(f==='command'){command=el.value;semantics=[];root.querySelector('.orig-tags').replaceChildren();}
  if(f==='semantic')semantics[Number(el.dataset.key)]=el.value;
  if(f==='profile'&&state.profile&&!state.locked){state.profile.confirmed[el.dataset.key]=el.value;save();}
- if(f==='endpoint'){settings=el.value.trim();localStorage.setItem('icon-studio-api',settings);}
- if(f==='access'){access=el.value;sessionStorage.setItem('icon-studio-access',access);}
 });
 document.addEventListener('change',event=>{
  const el=event.target,f=el.dataset.originalField;
@@ -275,18 +288,25 @@ document.addEventListener('click',event=>{
   const replacements=modal.querySelector('#rename-list').value.split(/\r?\n/);
   state.icons.forEach((item,index)=>{const name=replacements[index]?.trim();if(name)item.semantic=name.slice(0,80);});save();modal.close();break;
  }
+ case 'reference-choice':{
+  if(state.locked)return report('请先解锁风格，再更换生成参考');
+  const ids=effectiveRefs().map(item=>item.id); const pos=ids.indexOf(value);
+  if(pos<0&&ids.length>=3)return report('最多选择三张，请先取消一张');
+  if(pos>=0&&ids.length===1)return report('至少选择一张参考图');
+  state.representatives=pos<0?[...ids,value]:ids.filter(id=>id!==value);state.profile=null;save();break;
+ }
  case 'analyze':
   if(!state.refs.length)return report('请先上传原创参考图');
   if(state.locked)return report('请先解锁风格再分析');
   task(direct?'正在分析原创参考图':'正在提取本地视觉特征',async signal=>{
-   state.profile=direct?modelFields(await ask('analyze',{references:state.refs.map(item=>item.input)},signal)):await analyzeLocal(state.refs);
+   state.profile=direct?modelFields(await ask('analyze',{references:effectiveRefs().map(item=>item.input)},signal)):await analyzeLocal(state.refs);
    save();report('分析完成，请确认视觉规范');
   });return;
  case 'lock':
   if(state.locked)state.locked=null;
   else if(state.profile&&state.refs.length){
    if(JSON.stringify(state.profile).length>11500)return report('风格分析和确认内容超过长度限制');
-   state.locked={...structuredClone(state.profile),id:crypto.randomUUID(),version:++state.version,references:[...state.refs],generation:{size:1024,format:'png'}};
+   state.locked={...structuredClone(state.profile),id:crypto.randomUUID(),version:++state.version,references:[...state.refs],selectedRefs:effectiveRefs().map(ref=>ref.id),generation:{size:1024,format:'png'}};
   }
   save();break;
  case 'save-style':if(state.locked){state.styles.push(state.locked);save();report('已保存原创风格');}return;
@@ -315,18 +335,18 @@ document.addEventListener('click',event=>{
  case 'remove-tag':semantics.splice(Number(value),1);break;
  case 'parse':
   if(!command.trim())return report('请输入图标需求');
-  if(!direct){semantics=simpleParse();message='已按标点拆分，请检查语义标签';break;}
-  task('正在提取图标语义',async signal=>{const result=await ask('semantics',{text:command},signal);semantics=result.items;report('请检查并编辑语义标签');});return;
+  semantics=simpleParse();message='已按标点拆分，请检查语义标签';break;
  case 'generate':{
   if(!state.locked)return report('请先分析并锁定原创风格');
-  if(!semantics.length){semantics=simpleParse();message='请核对语义标签后，再点击生成图标';draw();return;}
+  if(!semantics.length)semantics=simpleParse();
   const items=[...new Set(semantics.map(item=>item.trim()).filter(Boolean))];
   if(!items.length)return report('至少需要一个有效语义');
+  if(items.length*variants>6)return report('每批最多生成六张，可减少语义或候选数量');
   const queue=items.flatMap(semantic=>Array.from({length:variants},()=>({id:crypto.randomUUID(),semantic,snapshot:state.locked,transparent})));
   task('准备生成 '+queue.length+' 个图标',signal=>batch(queue,signal));return;
  }
  case 'cancel':busy?.controller.abort();return;
- case 'retry':{const failure=state.failures.find(item=>item.id===value);if(failure)task('正在重试',signal=>batch([failure],signal));return;}
+ case 'retry':{const failure=state.failures.find(item=>item.id===value);if(failure)task('正在重试',signal=>batch([{...failure,id:crypto.randomUUID(),retryId:failure.id}],signal));return;}
  case 'evaluate':if(icon?.snapshot?.references?.length)task('正在检查一致性',async signal=>{const target=(await resample(icon.url,768)).url;icon.review=await ask('evaluate',{...lockedSpec(icon.snapshot),target},signal);save();});return;
  case 'confirm':if(icon){icon.review={status:'用户已确认',notes:icon.review?.notes};save();}break;
  case 'edit':case 'regenerate':if(icon?.snapshot?.references?.length){
@@ -335,7 +355,7 @@ document.addEventListener('click',event=>{
   task('正在修改图标',signal=>batch([{id:crypto.randomUUID(),semantic:icon.semantic,snapshot:icon.snapshot,transparent:icon.transparent,target:icon.id,...(action==='edit'?{previous:icon.url,edit}:{})}],signal));
  }return;
  case 'compare':if(icon)show('图标版本','<div class="orig-version"><div><b>当前版本</b>'+imageMarkup({url:icon.url,name:icon.semantic})+'</div>'+icon.history.map((entry,index)=>'<div><b>历史版本 '+(index+1)+'</b>'+imageMarkup({url:entry.url,name:icon.semantic})+btn('restore','恢复此版本',index)+'</div>').join('')+'</div>');return;
- case 'restore':if(icon){const chosen=icon.history[Number(value)];icon.history=[...icon.history,{url:icon.url,review:icon.review}].slice(-6);icon.url=chosen.url;icon.review=chosen.review;save();modal.close();}break;
+ case 'restore':if(icon){const chosen=icon.history[Number(value)];icon.history=[...icon.history,{url:icon.url,original:icon.original,review:icon.review}].slice(-6);icon.url=chosen.url;icon.original=chosen.original;icon.showOriginal=false;icon.review=chosen.review;save();modal.close();}break;
  case 'adopt':if(icon)show('添加辅助参考','<p>当前资产使用的锁定版本会保留。将此图加入参考集合后，请重新分析并确认新的风格版本。</p>'+btn('adopt-confirm','确认添加',icon.id,'primary'));return;
  case 'adopt-confirm':{
   const item=byId(value);if(!item)return;
@@ -343,6 +363,8 @@ document.addEventListener('click',event=>{
   task('正在添加辅助参考',async()=>{const data=await resample(item.url,768);changeRefs([...state.refs,{id:crypto.randomUUID(),name:item.semantic+' · 辅助参考',url:item.url,input:data.url,facts:{type:'image/png',bytes:Math.floor(item.url.length*.75),width:data.width,height:data.height}}]);});return;
  }
  case 'remove-icon':if(icon){state.icons=state.icons.filter(item=>item.id!==selected);state.failures=state.failures.filter(item=>item.target!==selected);selected='';save();}break;
+ case 'toggle-original':if(icon){icon.showOriginal=!icon.showOriginal;save();}break;
+ case 'background-tool':if(icon?.original)backgroundTool(icon);return;
  case 'png':if(icon)task('正在导出 PNG',async()=>{download(fileName(icon.semantic)+'-'+size+'.png',await png(icon));report('已导出 PNG');});return;
  case 'zip':
   if(!state.icons.length)return report('请先生成图标');
@@ -439,3 +461,23 @@ function paintBoxes(item,index){
   current[2]=Math.min(current[2],item.source.width-current[0]);current[3]=Math.min(current[3],item.source.height-current[1]);paintBoxes(item,index);
  };
 }
+function backgroundTool(icon){
+ const box=show('去除背景','<p class="hint">默认只移除与四周相连的底色。开启内部去白可处理描边中的留白，但可能移除白色或浅色主体。纯白主体和相同颜色的背景无法仅靠颜色可靠分离。</p><div class="comparison"><div>'+imageMarkup({url:icon.original,name:'原始图像'},'background-sample')+'</div><div class="background-checker"><img class="background-sample" id="background-result" alt="去背景预览"></div></div><label>背景容差<input id="background-tolerance" type="range" min="4" max="75" value="26"></label><label><input id="background-inside" type="checkbox"> 同时去除内部留白</label><button class="primary small" id="background-save" disabled>保存透明结果</button>');
+ let index=0,previewUrl='';
+ const update=async()=>{
+  const request=++index;
+  box.querySelector('#background-save').disabled=true;
+  try{
+   const result=await prepareImport({url:icon.original},{mode:'single',remove:true,tolerance:Number(box.querySelector('#background-tolerance').value),feather:true,interior:box.querySelector('#background-inside').checked});
+   if(request!==index||!box.open||!box.querySelector('#background-result'))return;
+   previewUrl=result.source.toDataURL('image/png');
+   box.querySelector('#background-result').src=previewUrl;
+   box.querySelector('#background-save').disabled=false;
+  }catch{report('无法处理原始图像');}
+ };
+ box.querySelector('#background-tolerance').oninput=update;
+ box.querySelector('#background-inside').onchange=update;
+ box.querySelector('#background-save').onclick=()=>{if(previewUrl){icon.url=previewUrl;icon.showOriginal=false;save();box.close();draw();report('已保存透明 PNG，原图已保留');}};
+ update();
+}
+
