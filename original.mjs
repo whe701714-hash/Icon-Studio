@@ -53,7 +53,7 @@ async function ask(route,payload,signal){
  }
  const result=await fetch(config.url+'/api/'+route,{method:payload?'POST':'GET',headers:{Authorization:'Bearer '+access},body,signal});
  const data=await result.json();
- if(!result.ok)throw new Error(data.error||'生成服务请求失败');
+ if(!result.ok)throw Object.assign(new Error(data.error||'生成服务请求失败'),{status:result.status});
  quota=data.quota||(route==='status'?data:quota);
  return data;
 }
@@ -299,8 +299,19 @@ document.addEventListener('click',event=>{
   if(!state.refs.length)return report('请先上传原创参考图');
   if(state.locked)return report('请先解锁风格再分析');
   task(direct?'正在分析原创参考图':'正在提取本地视觉特征',async signal=>{
-   state.profile=direct?modelFields(await ask('analyze',{references:effectiveRefs().map(item=>item.input)},signal)):await analyzeLocal(state.refs);
-   save();report('分析完成，请确认视觉规范');
+   const refs=effectiveRefs();
+   if(!direct){
+    state.profile=await analyzeLocal(refs);save();report('本地分析完成，请确认视觉规范');return;
+   }
+   if(!access)throw new Error('当前标签页未授权，请用私人测试快捷方式打开工作台');
+   try {
+    state.profile=modelFields(await ask('analyze',{references:refs.map(item=>item.input)},signal));
+    save();report('AI 分析完成，请确认视觉规范');
+   } catch(error) {
+    if(signal.aborted||error.name==='AbortError'||error.status===401||error.status===403)throw error;
+    state.profile=await analyzeLocal(refs);
+    save();report('AI 分析暂不可用，已提取本地色板与比例。请补充造型特征后锁定，生成仍使用原始参考图。');
+   }
   });return;
  case 'lock':
   if(state.locked)state.locked=null;
@@ -480,4 +491,5 @@ function backgroundTool(icon){
  box.querySelector('#background-save').onclick=()=>{if(previewUrl){icon.url=previewUrl;icon.showOriginal=false;save();box.close();draw();report('已保存透明 PNG，原图已保留');}};
  update();
 }
+
 
