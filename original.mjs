@@ -1,3 +1,4 @@
+import {analyzeLocal,prepareImport,normalize,prompts} from './local-tools.mjs';
 const blank={refs:[],profile:null,locked:null,version:0,icons:[],styles:[],failures:[]};
 const database=await new Promise(resolve=>{
  const request=indexedDB.open('icon-studio-original',1);
@@ -15,8 +16,9 @@ const clean=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':
 const imageMarkup=(ref,cls='')=>'<img class="'+cls+'" src="'+clean(ref.url)+'" alt="'+clean(ref.name)+'">';
 const btn=(name,label,value='',cls='secondary')=>'<button type="button" class="'+cls+'" data-original="'+name+'" data-value="'+clean(value)+'">'+label+'</button>';
 const fields={name:'风格名称',color:'色彩语言',shape:'造型语言',line:'线条语言',composition:'构图与比例',material:'材质与光影',distinct:'独特特征',prompt:'风格提示词',keep:'必须保留',flex:'允许变化',avoid:'禁止出现'};
+let direct=false;
 let root,settings=localStorage.getItem('icon-studio-api')||'',access=sessionStorage.getItem('icon-studio-access')||'';
-let selected='',command='',semantics=[],variants=1,size=256,transparent=true,busy=null,message='',left=true,right=true,background='light',view='grid';
+let selected='',command='',semantics=[],variants=1,size=256,transparent=true,busy=null,message='',left=matchMedia('(min-width: 871px)').matches,right=left,background='light',view='grid';
 const routes={analyze:'分析参考图',generate:'生成图标',evaluate:'检查一致性',semantics:'提取语义'};
 const scenes={底部导航:['首页','搜索','收藏','消息','我的'],功能宫格:['购物车','相机','日历','定位'],设置列表:['个人中心','通知','设置'],桌面工具栏:['文件夹','搜索','日历','相机'],仪表盘:['首页','文件夹','消息','设置']};
 let scene='底部导航';
@@ -95,7 +97,7 @@ async function files(list,replace){
  report(errors.join('；')||(next.length===6?'已达到 6 张参考图上限':'参考图已就绪'));
 }
 function lockedSpec(snapshot){
- const {references,...profile}=snapshot;
+ const {references,measurements,...profile}=snapshot;
  return {references:references.map(ref=>ref.input),profile:{...profile,referenceNames:references.map(ref=>ref.name)}};
 }
 function modelFields(data){
@@ -108,7 +110,7 @@ function profileView(){
  const draft=state.profile;
  if(!draft)return '<p class="hint">上传后分析原创设计，确认视觉规范后即可锁定。</p>';
  const locked=Boolean(state.locked);
- return '<div class="orig-palette">'+draft.palette.map(v=>'<span style="--swatch:'+v+'">'+v+'</span>').join('')+'</div><small>模型推断可在下方修订并确认。文件属性见各参考图。</small><div class="orig-fields">'+Object.entries(fields).map(([key,label])=>'<label>'+label+'<textarea maxlength="1500" rows="'+(key==='name'?1:2)+'" '+(locked?'readonly ':'')+'data-original-field="profile" data-key="'+key+'">'+clean(draft.confirmed[key])+'</textarea></label>').join('')+'</div>'+(draft.inferred.extra?'<details><summary>其他推断</summary><pre>'+clean(JSON.stringify(draft.inferred.extra,null,2))+'</pre></details>':'')+btn('lock',locked?'解锁并修订':'确认并锁定', '', 'primary')+(locked?btn('save-style','保存原创风格'):'');
+ return '<div class="orig-palette">'+draft.palette.map(v=>'<span style="--swatch:'+v+'">'+v+'</span>').join('')+'</div>'+(draft.source==='local'?'<small>浏览器直接测量。造型、材质和光影请手动确认。</small>'+localMeasurements(draft):'<small>模型推断可在下方修订并确认。文件属性见各参考图。</small>')+'<div class="orig-fields">'+Object.entries(fields).map(([key,label])=>'<label>'+label+'<textarea maxlength="1500" rows="'+(key==='name'?1:2)+'" '+(locked?'readonly ':'')+'data-original-field="profile" data-key="'+key+'">'+clean(draft.confirmed[key])+'</textarea></label>').join('')+'</div>'+(draft.inferred.extra?'<details><summary>其他推断</summary><pre>'+clean(JSON.stringify(draft.inferred.extra,null,2))+'</pre></details>':'')+btn('lock',locked?'解锁并修订':'确认并锁定', '', 'primary')+(locked?btn('save-style','保存原创风格'):'');
 }
 function referenceView(){
  return '<div class="orig-assets">'+state.refs.map(ref=>'<article>'+btn('ref',imageMarkup(ref)+'<span>'+clean(ref.name)+'</span>',ref.id,'orig-asset')+'<div class="orig-tools">'+btn('replace','替换',ref.id,'quiet')+btn('remove-ref','移除',ref.id,'quiet')+'</div></article>').join('')+'</div>';
@@ -120,18 +122,18 @@ function outputView(){
    return '<div>'+(icon?imageMarkup({name:icon.semantic,url:icon.url},'scene-icon'):'<span>—</span>')+'<span>'+clean(icon?.semantic||semantic)+'</span></div>';
   }).join('')+'</div></div></div>';
  }
- return '<div class="orig-assets">'+state.icons.map(icon=>'<article>'+btn('select',imageMarkup({name:icon.semantic,url:icon.url})+'<span>'+clean(icon.semantic)+'</span><small>'+clean(icon.review?.status||'待检查')+'</small>',icon.id,'orig-asset '+(icon.id===selected?'on':''))+'</article>').join('')+state.failures.map(f=>'<article class="orig-failed"><b>'+clean(f.semantic)+'</b><small>'+clean(f.error)+'</small>'+btn('retry','重试',f.id,'quiet')+'</article>').join('')+'</div>'+(!state.icons.length&&!state.failures.length?'<div class="orig-empty"><strong>让原创风格延伸到新的图标</strong><p>上传并锁定参考图，在底部输入需要的图标。</p></div>':'');
+ return '<div class="orig-assets">'+state.icons.map(icon=>'<article>'+btn('select',imageMarkup({name:icon.semantic,url:icon.url})+'<span>'+clean(icon.semantic)+'</span><small>'+clean(icon.review?.status||'待检查')+'</small>',icon.id,'orig-asset '+(icon.id===selected?'on':''))+'</article>').join('')+state.failures.map(f=>'<article class="orig-failed"><b>'+clean(f.semantic)+'</b><small>'+clean(f.error)+'</small>'+btn('retry','重试',f.id,'quiet')+'</article>').join('')+'</div>'+(!state.icons.length&&!state.failures.length?'<div class="orig-empty"><strong>让原创风格延伸到新的图标</strong><p>上传并锁定参考图，再构建提示词或导入生成结果。</p></div>':'');
 }
 function inspection(){
  const icon=byId(selected);
  if(!icon)return '<h2>图标属性</h2><p class="hint">选择生成结果，可检查一致性、局部修改或导出。</p>';
- return '<h2>图标属性</h2>'+imageMarkup({name:icon.semantic,url:icon.url},'orig-inspect')+'<strong>'+clean(icon.semantic)+'</strong><small>风格版本 '+icon.snapshot.version+' · '+clean(icon.review?.status||'待检查')+'</small>'+(icon.review?.notes?'<p class="hint">'+clean(icon.review.notes)+'</p>':'')+btn('evaluate','检查一致性')+btn('confirm','标记为已确认')+'<label>局部修改<textarea maxlength="700" data-original-field="edit" placeholder="例如减少内部细节，保留材质与光影"></textarea></label>'+btn('edit','应用修改')+btn('regenerate','重新生成')+(icon.history?.length?btn('compare','查看版本与撤销'):'')+btn('adopt','添加为辅助参考')+btn('png','下载 PNG')+btn('remove-icon','删除图标');
+ return '<h2>图标属性</h2>'+imageMarkup({name:icon.semantic,url:icon.url},'orig-inspect')+'<strong>'+clean(icon.semantic)+'</strong><small>风格版本 '+(icon.snapshot?.version||'未绑定')+' · '+clean(icon.review?.status||'待检查')+'</small>'+(icon.review?.notes?'<p class="hint">'+clean(icon.review.notes)+'</p>':'')+(direct&&icon.snapshot?.references?.length?btn('evaluate','检查一致性'):'')+btn('confirm','标记为已确认')+'<label>局部修改<textarea maxlength="700" data-original-field="edit" placeholder="例如减少内部细节，保留材质与光影"></textarea></label>'+(direct&&icon.snapshot?.references?.length?btn('edit','应用修改')+btn('regenerate','重新生成'):btn('edit-prompt','构建局部修改提示词'))+(icon.history?.length?btn('compare','查看版本与撤销'):'')+btn('adopt','添加为辅助参考')+btn('png','下载 PNG')+btn('remove-icon','删除图标');
 }
 function draw(){
  if(!root?.isConnected)return;
  const switched=root.dataset.initial!=='yes';
  root.dataset.initial='yes';
- root.innerHTML='<div class="workbar"><div class="row">'+btn('left',left?'收起风格':'展开风格','','quiet')+'<b>原创风格工作台</b></div><div class="row"><a class="secondary small" href="#presets">使用系统预设</a>'+btn('right',right?'收起属性':'展开属性','','quiet')+'</div></div><div class="workspace original-workspace '+(!left?'hide-left ':'')+(!right?'hide-right':'')+'"><aside class="left-panel"><h2>风格基因</h2><label class="drop orig-drop" tabindex="0">＋ 上传参考图标<small>拖拽或选择 1–6 张 PNG、JPG、WEBP、SVG</small><input data-original-file type="file" accept=".png,.jpg,.jpeg,.webp,.svg" multiple hidden></label>'+btn('analyze','分析原创风格','','primary')+profileView()+configure()+'</aside><section class="canvas '+background+'"><div class="canvas-top"><div class="segmented">'+btn('view','图标画布','grid',view==='grid'?'on':'')+btn('view','应用场景预览','scene',view==='scene'?'on':'')+'</div><div class="row">'+(view==='scene'?'<select data-original-field="scene" aria-label="应用场景">'+Object.keys(scenes).map(key=>'<option '+(scene===key?'selected':'')+'>'+key+'</option>').join('')+'</select>':'')+'<select aria-label="画布背景" data-original-field="background">'+[['light','浅色'],['dark','深色'],['transparent','透明']].map(([key,label])=>'<option value="'+key+'" '+(key===background?'selected':'')+'>'+label+'</option>').join('')+'</select>'+btn('zip','批量导出')+'</div></div><div class="canvas-body"><h2>我的原创参考图标</h2>'+referenceView()+(!state.refs.length?'<p class="hint">添加原创图标，建议使用 3–6 张同系列作品。</p>':'')+'<h2 class="orig-result-title">AI 生成图标</h2>'+outputView()+'</div><div class="command orig-command"><div class="command-head"><strong>AI 创作指令</strong><span role="status" class="orig-status">'+clean(busy?.label||message||(state.locked?'已锁定风格 · 版本 '+state.locked.version:storageError?'本地存储不可用':'等待确认风格'))+'</span></div><textarea data-original-field="command" maxlength="1000" rows="2" placeholder="例如生成宠物喂养、睡眠监测、城市骑行图标">'+clean(command)+'</textarea><div class="orig-tags">'+semantics.map((item,index)=>'<label><input maxlength="80" aria-label="图标语义 '+(index+1)+'" data-original-field="semantic" data-key="'+index+'" value="'+clean(item)+'">'+btn('remove-tag','×',index,'quiet')+'</label>').join('')+'</div><div class="orig-generate">'+btn('parse','提取语义','','quiet')+btn('add-tag','添加语义','','quiet')+'<label>候选 <select data-original-field="variants">'+[1,2,3].map(n=>'<option '+(n===variants?'selected':'')+'>'+n+'</option>').join('')+'</select></label><label>PNG <select data-original-field="size">'+[64,128,256,512,1024].map(n=>'<option '+(n===size?'selected':'')+'>'+n+'</option>').join('')+'</select></label><label><input type="checkbox" data-original-field="transparent" '+(transparent?'checked':'')+'> 透明背景</label>'+btn(busy?'cancel':'generate',busy?'取消':'生成图标','','primary small')+'</div></div></section><aside class="right-panel">'+inspection()+'</aside></div>';
+ root.innerHTML='<div class="workbar"><div class="row">'+btn('left',left?'收起风格':'展开风格','','quiet')+'<div class="segmented">'+btn('mode','免配置创作','local',!direct?'on':'')+btn('mode','AI 直连创作','direct',direct?'on':'')+'</div></div><div class="row"><a class="secondary small" href="#presets">使用系统预设</a>'+btn('right',right?'收起属性':'展开属性','','quiet')+'</div></div><div class="workspace original-workspace '+(!left?'hide-left ':'')+(!right?'hide-right':'')+'"><aside class="left-panel"><h2>风格基因</h2><label class="drop orig-drop" tabindex="0">＋ 上传参考图标<small>拖拽或选择 1–6 张 PNG、JPG、WEBP、SVG</small><input data-original-file type="file" accept=".png,.jpg,.jpeg,.webp,.svg" multiple hidden></label>'+btn('analyze',direct?'AI 分析原创风格':'本地分析参考图','','primary')+profileView()+(direct?configure():'')+'</aside><section class="canvas '+background+'"><div class="canvas-top"><div class="segmented">'+btn('view','图标画布','grid',view==='grid'?'on':'')+btn('view','应用场景预览','scene',view==='scene'?'on':'')+'</div><div class="row">'+(view==='scene'?'<select data-original-field="scene" aria-label="应用场景">'+Object.keys(scenes).map(key=>'<option '+(scene===key?'selected':'')+'>'+key+'</option>').join('')+'</select>':'')+'<select aria-label="画布背景" data-original-field="background">'+[['light','浅色'],['dark','深色'],['transparent','透明']].map(([key,label])=>'<option value="'+key+'" '+(key===background?'selected':'')+'>'+label+'</option>').join('')+'</select>'+(!direct?btn('import','导入生成结果','','primary small')+btn('rename','批量重命名','','quiet'):'')+btn('zip','批量导出')+'</div></div><div class="canvas-body"><h2>我的原创参考图标</h2>'+referenceView()+(!state.refs.length?'<p class="hint">添加原创图标，建议使用 3–6 张同系列作品。</p>':'')+'<h2 class="orig-result-title">'+(direct?'AI 生成图标':'创作资产')+'</h2>'+outputView()+'</div><div class="command orig-command"><div class="command-head"><strong>'+(direct?'AI 创作指令':'图标需求与提示词')+'</strong><span role="status" class="orig-status">'+clean(busy?.label||message||(state.locked?'已锁定风格 · 版本 '+state.locked.version:storageError?'本地存储不可用':'等待确认风格'))+'</span></div><textarea data-original-field="command" maxlength="1000" rows="2" placeholder="例如生成宠物喂养、睡眠监测、城市骑行图标">'+clean(command)+'</textarea><div class="orig-tags">'+semantics.map((item,index)=>'<label><input maxlength="80" aria-label="图标语义 '+(index+1)+'" data-original-field="semantic" data-key="'+index+'" value="'+clean(item)+'">'+btn('remove-tag','×',index,'quiet')+'</label>').join('')+'</div><div class="orig-generate">'+btn('parse','提取语义','','quiet')+btn('add-tag','添加语义','','quiet')+(direct?'<label>候选 <select data-original-field="variants">'+[1,2,3].map(n=>'<option '+(n===variants?'selected':'')+'>'+n+'</option>').join('')+'</select></label>':'')+'<label>PNG <select data-original-field="size">'+[64,128,256,512,1024].map(n=>'<option '+(n===size?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+(direct?'<label><input type="checkbox" data-original-field="transparent" '+(transparent?'checked':'')+'> 透明背景</label>':'')+btn(busy?'cancel':direct?'generate':'prompt',busy?'取消':direct?'生成图标':'生成提示词','','primary small')+'</div></div></section><aside class="right-panel">'+inspection()+'</aside></div>';
  if(busy)root.querySelectorAll('[data-original]').forEach(button=>{if(!['cancel','left','right'].includes(button.dataset.original))button.disabled=true;});
  if(switched)root.querySelector('.original-workspace').animate([{opacity:.6},{opacity:1}],{duration:matchMedia('(prefers-reduced-motion: reduce)').matches?0:190});
 }
@@ -234,10 +236,52 @@ document.addEventListener('click',event=>{
   const connected=button.closest('details');
   ask('status').then(info=>{connected.open=true;report(info.ready?'AI 服务可用，执行操作时会验证访问码':'服务已响应，尚未配置密钥或访问码');}).catch(error=>report(error.message));return;
  }
+ case 'mode':direct=value==='direct';message='';break;
+ case 'prompt':promptDialog('batch','',semantics.length?null:simpleParse());return;
+ case 'edit-prompt':if(icon)promptDialog('edit',root.querySelector('[data-original-field="edit"]').value,[icon.semantic],icon.snapshot||state.locked);return;
+ case 'copy-prompt':{
+  const text=modal.querySelector('#prompt-'+value);
+  navigator.clipboard.writeText(text.value).then(()=>modal.querySelector('#prompt-message').textContent='已复制').catch(()=>{text.select();modal.querySelector('#prompt-message').textContent='请使用键盘复制所选文字';});return;
+ }
+ case 'references-zip':{
+  const refs=modal.snapshotForPrompt?.references||[];
+  Promise.all(refs.map(async(ref,index)=>[index+1+'-'+ref.name.replace(/[\\/]/g,'-'),new Uint8Array(await (await fetch(ref.url)).arrayBuffer())])).then(entries=>download('原创参考图.zip',zip(entries))).catch(()=>{modal.querySelector('#prompt-message').textContent='参考图打包失败';});return;
+ }
+ case 'import':importRefs=[];importDialog();return;
+ case 'add-region':{
+  const item=prepared?.[Number(value)];
+  if(item&&item.boxes.length<64){item.boxes.push([0,0,item.source.width,item.source.height]);paintBoxes(item,Number(value));}return;
+ }
+ case 'delete-region':{
+  const [index,pos]=value.split(',').map(Number);const item=prepared?.[index];
+  if(item){item.boxes.splice(pos,1);paintBoxes(item,index);}return;
+ }
+ case 'apply-import':{
+  if(!prepared)return;
+  const count=prepared.reduce((sum,item)=>sum+item.boxes.length,0);
+  if(count>64){modal.querySelector('#import-status').textContent='每批最多导入 64 个图标，请减少切割区域。';return;}
+  const names=semantics.length?semantics:simpleParse();
+  const assets=[];
+  for(const item of prepared)for(const region of item.boxes){
+   const url=normalize(item,region,size,importOptions.ratio/100,importOptions.center);
+   if(!url)continue;
+   assets.push({id:crypto.randomUUID(),semantic:names[assets.length]?.trim()||item.name.replace(/\.[^.]+$/,'')+(item.boxes.length>1?' '+(item.boxes.indexOf(region)+1):''),url,snapshot:state.locked,history:[],imported:true});
+  }
+  if(!assets.length){modal.querySelector('#import-status').textContent='所选区域没有可见图标，请调整框选或背景容差。';return;}
+  state.icons.push(...assets);save();modal.close();view='grid';selected=assets[0].id;message='已导入 '+assets.length+' 个 '+size+' 像素图标';break;
+ }
+ case 'rename':if(state.icons.length)show('批量重命名','<label>按顺序输入名称，每行一个<textarea id="rename-list" rows="8">'+clean(state.icons.map(item=>item.semantic).join('\n'))+'</textarea></label>'+btn('apply-rename','保存名称','','primary small'));else report('请先导入图标');return;
+ case 'apply-rename':{
+  const replacements=modal.querySelector('#rename-list').value.split(/\r?\n/);
+  state.icons.forEach((item,index)=>{const name=replacements[index]?.trim();if(name)item.semantic=name.slice(0,80);});save();modal.close();break;
+ }
  case 'analyze':
   if(!state.refs.length)return report('请先上传原创参考图');
   if(state.locked)return report('请先解锁风格再分析');
-  task('正在分析原创参考图',async signal=>{state.profile=modelFields(await ask('analyze',{references:state.refs.map(item=>item.input)},signal));save();report('分析完成，请确认视觉规范');});return;
+  task(direct?'正在分析原创参考图':'正在提取本地视觉特征',async signal=>{
+   state.profile=direct?modelFields(await ask('analyze',{references:state.refs.map(item=>item.input)},signal)):await analyzeLocal(state.refs);
+   save();report('分析完成，请确认视觉规范');
+  });return;
  case 'lock':
   if(state.locked)state.locked=null;
   else if(state.profile&&state.refs.length){
@@ -271,7 +315,7 @@ document.addEventListener('click',event=>{
  case 'remove-tag':semantics.splice(Number(value),1);break;
  case 'parse':
   if(!command.trim())return report('请输入图标需求');
-  if(!settings&&!access){semantics=simpleParse();message='已按标点拆分，请检查语义标签';break;}
+  if(!direct){semantics=simpleParse();message='已按标点拆分，请检查语义标签';break;}
   task('正在提取图标语义',async signal=>{const result=await ask('semantics',{text:command},signal);semantics=result.items;report('请检查并编辑语义标签');});return;
  case 'generate':{
   if(!state.locked)return report('请先分析并锁定原创风格');
@@ -283,9 +327,9 @@ document.addEventListener('click',event=>{
  }
  case 'cancel':busy?.controller.abort();return;
  case 'retry':{const failure=state.failures.find(item=>item.id===value);if(failure)task('正在重试',signal=>batch([failure],signal));return;}
- case 'evaluate':if(icon)task('正在检查一致性',async signal=>{const target=(await resample(icon.url,768)).url;icon.review=await ask('evaluate',{...lockedSpec(icon.snapshot),target},signal);save();});return;
+ case 'evaluate':if(icon?.snapshot?.references?.length)task('正在检查一致性',async signal=>{const target=(await resample(icon.url,768)).url;icon.review=await ask('evaluate',{...lockedSpec(icon.snapshot),target},signal);save();});return;
  case 'confirm':if(icon){icon.review={status:'用户已确认',notes:icon.review?.notes};save();}break;
- case 'edit':case 'regenerate':if(icon){
+ case 'edit':case 'regenerate':if(icon?.snapshot?.references?.length){
   const edit=root.querySelector('[data-original-field="edit"]').value.trim();
   if(action==='edit'&&!edit)return report('请输入局部修改要求');
   task('正在修改图标',signal=>batch([{id:crypto.randomUUID(),semantic:icon.semantic,snapshot:icon.snapshot,transparent:icon.transparent,target:icon.id,...(action==='edit'?{previous:icon.url,edit}:{})}],signal));
@@ -308,3 +352,90 @@ document.addEventListener('click',event=>{
  }
  draw();
 });
+function localMeasurements(draft){
+ return '<div class="local-measurements">'+draft.measurements.map(item=>'<details><summary>'+clean(item.name)+'</summary><small>'+item.width+' × '+item.height+' 像素 · 透明 '+item.transparent+'%</small><small>可见像素 '+item.coverage+'% · 边界长边 '+item.span+'%</small>'+(item.margin?'<small>上右下左留白 '+item.margin.join('% / ')+'%</small>':'')+(item.transparent===0?'<small>图片全不透明，边界包含背景。</small>':'')+(item.svg?'<small>SVG 路径 '+item.svg.paths+' · 视口 '+clean(item.svg.viewBox||'未声明')+'</small><small>填充 '+clean(item.svg.fill.join('、')||'未声明')+' · 描边 '+clean(item.svg.stroke.join('、')||'未声明')+' · 粗细 '+clean(item.svg.strokeWidth.join('、')||'未声明')+'</small>':'')+'</details>').join('')+'</div>';
+}
+function promptDialog(kind='batch',edit='',targets=null,snapshot=state.locked){
+ if(!snapshot)return report('请先分析并确认风格');
+ const items=targets||semantics.filter(value=>value.trim()).map(value=>value.trim());
+ const types=[['single','单图标'],['batch','批量'],['consistency','一致性'],['edit','局部修改']];
+ const [zh,en]=prompts(snapshot,items,kind,edit);
+ const box=show('生成提示词','<p class="hint">在外部工具中手动上传原始参考图并粘贴提示词。局部修改时也上传目标图标。英文版保留无法确定译法的用户原文。</p><label>提示词用途<select id="prompt-kind">'+types.map(([key,label])=>'<option value="'+key+'" '+(key===kind?'selected':'')+'>'+label+'</option>').join('')+'</select></label>'+(kind==='edit'?'<label>修改要求<input maxlength="700" id="prompt-edit" value="'+clean(edit)+'"></label>':'')+'<div class="local-prompt"><label>中文<textarea readonly rows="7" id="prompt-zh">'+clean(zh)+'</textarea></label>'+btn('copy-prompt','复制中文','zh')+'<label>英文<textarea readonly rows="7" id="prompt-en">'+clean(en)+'</textarea></label>'+btn('copy-prompt','复制英文','en')+'</div><div class="row">'+btn('references-zip','下载原始参考图')+'<a class="primary small" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">打开 ChatGPT</a></div><span id="prompt-message" role="status"></span>');
+ box.snapshotForPrompt=snapshot;
+ box.querySelector('#prompt-kind').onchange=event=>promptDialog(event.target.value,edit,items,snapshot);
+ const editInput=box.querySelector('#prompt-edit');
+ if(editInput)editInput.oninput=()=>{const [cn,english]=prompts(snapshot,items,kind,editInput.value);box.querySelector('#prompt-zh').value=cn;box.querySelector('#prompt-en').value=english;};
+}
+let importRefs=[], prepared=null, generation=0;
+const importOptions={mode:'single',rows:2,cols:2,remove:false,tolerance:34,feather:true,ratio:78,center:true};
+function importDialog(){
+ prepared=null;
+ const box=show('导入生成结果','<p class="hint">图标保留为透明 PNG。纯色背景可尝试移除，复杂背景请先在外部工具处理。</p><label>选择图标文件<input type="file" id="result-files" accept=".png,.jpg,.jpeg,.webp,.svg" multiple></label><div class="local-import-settings"><label>切割方式<select id="cut-mode"><option value="single">每文件一个图标</option><option value="grid">按行列切割</option><option value="alpha">按透明间隔切割</option></select></label><label>行数<input type="number" min="1" max="8" id="cut-rows" value="'+importOptions.rows+'"></label><label>列数<input type="number" min="1" max="8" id="cut-cols" value="'+importOptions.cols+'"></label><label>主体长边占比 %<input type="number" min="35" max="100" id="asset-ratio" value="'+importOptions.ratio+'"></label><label>背景容差<input type="number" min="5" max="100" id="bg-tolerance" value="'+importOptions.tolerance+'"></label></div><div class="local-checks"><label><input type="checkbox" id="bg-remove">移除纯色背景</label><label><input type="checkbox" id="edge-feather" checked>柔化边缘</label><label><input type="checkbox" id="asset-center" checked>按可见像素重心对齐</label></div><p id="import-status" role="status"></p><div id="import-preview"></div><div class="row">'+btn('apply-import','确认导入','','primary small')+'</div>');
+ box.querySelector('#cut-mode').value=importOptions.mode;
+ box.querySelector('#bg-remove').checked=importOptions.remove;
+ box.querySelector('#edge-feather').checked=importOptions.feather;
+ box.querySelector('#asset-center').checked=importOptions.center;
+ box.querySelector('#result-files').onchange=async event=>{
+  const run=++generation;const result=[];let skipped=0;
+  for(const file of [...event.target.files].slice(0,16)){try{result.push(await fileRef(file));}catch{skipped++;}}
+  if(run!==generation||!box.open||!box.querySelector('#result-files'))return;
+  importRefs=result;updateImport(skipped?'有 '+skipped+' 张文件无法读取。':'');
+ };
+ box.querySelectorAll('.local-import-settings input,.local-import-settings select,.local-checks input').forEach(el=>el.onchange=()=>updateImport());
+ updateImport();
+}
+function numberValue(box,id,min,max,fallback){
+ const value=Number(box.querySelector('#'+id).value);
+ return Number.isFinite(value)&&value>=min&&value<=max?Math.round(value):fallback;
+}
+async function updateImport(note=''){
+ const run=++generation,box=document.querySelector('#modal'),preview=box.querySelector('#import-preview'),status=box.querySelector('#import-status');
+ if(!preview)return;
+ Object.assign(importOptions,{mode:box.querySelector('#cut-mode').value,rows:numberValue(box,'cut-rows',1,8,2),cols:numberValue(box,'cut-cols',1,8,2),ratio:numberValue(box,'asset-ratio',35,100,78),tolerance:numberValue(box,'bg-tolerance',5,100,34),remove:box.querySelector('#bg-remove').checked,feather:box.querySelector('#edge-feather').checked,center:box.querySelector('#asset-center').checked});
+ prepared=null;preview.replaceChildren();status.textContent=importRefs.length?'正在计算切割区域…':note||'请选择一张或多张文件。';
+ if(!importRefs.length)return;
+ const settings={...importOptions};
+ try{
+  const result=[];
+  for(const ref of importRefs){
+   const item=await prepareImport(ref,settings);
+   if(run!==generation||!preview.isConnected||!box.open)return;
+   result.push({...item,name:ref.name});
+  }
+  prepared=result;
+  status.textContent=note+' 识别到 '+result.reduce((sum,item)=>sum+item.boxes.length,0)+' 个区域。可编辑坐标，或在下方图片拖动新增区域。';
+  result.forEach((item,index)=>{
+   const area=document.createElement('section');area.className='import-source';
+   area.innerHTML='<strong>'+clean(item.name)+'</strong><small>处理图尺寸 '+item.source.width+' × '+item.source.height+'</small><div class="import-stage" aria-label="按住并拖动以框选区域"></div><div class="import-boxes"></div>'+btn('add-region','新增区域',index,'quiet');
+   preview.append(area);
+   const stage=area.querySelector('.import-stage');
+   stage.append(item.source);
+   let start=null;
+   const point=event=>{const b=stage.getBoundingClientRect();return [Math.max(0,Math.min(item.source.width,Math.round((event.clientX-b.left)/b.width*item.source.width))),Math.max(0,Math.min(item.source.height,Math.round((event.clientY-b.top)/b.height*item.source.height)))];};
+   stage.onpointerdown=event=>{start=point(event);stage.setPointerCapture(event.pointerId);};
+   stage.onpointerup=event=>{
+    if(!start)return;const end=point(event),x=Math.min(start[0],end[0]),y=Math.min(start[1],end[1]),w=Math.abs(start[0]-end[0]),h=Math.abs(start[1]-end[1]);start=null;
+    if(w>2&&h>2&&item.boxes.length<64){item.boxes.push([x,y,w,h]);paintBoxes(item,index);}
+   };
+   paintBoxes(item,index);
+  });
+ }catch{status.textContent='无法计算切割区域，请尝试更小的图片。';}
+}
+function paintBoxes(item,index){
+ const area=document.querySelectorAll('.import-source')[index], stage=area.querySelector('.import-stage'), rows=area.querySelector('.import-boxes');
+ stage.querySelectorAll('i').forEach(el=>el.remove());
+ rows.innerHTML=item.boxes.map((region,pos)=>{
+  const overlay=document.createElement('i');
+  const [x,y,w,h]=region;
+  Object.assign(overlay.style,{left:x/item.source.width*100+'%',top:y/item.source.height*100+'%',width:w/item.source.width*100+'%',height:h/item.source.height*100+'%'});stage.append(overlay);
+  return '<div><span>'+String(pos+1)+'</span>'+region.map((v,col)=>'<input type="number" min="0" aria-label="'+['横坐标','纵坐标','宽度','高度'][col]+'" data-region="'+pos+'" data-coordinate="'+col+'" value="'+v+'">').join('')+btn('delete-region','移除',index+','+pos,'quiet')+'</div>';
+ }).join('');
+ rows.onchange=event=>{
+  const input=event.target,{region,coordinate}=input.dataset;
+  if(region===undefined)return;
+  const current=item.boxes[Number(region)];
+  const limits=[item.source.width-1,item.source.height-1,item.source.width,item.source.height];
+  current[coordinate]=Math.min(limits[coordinate],Math.max(Number(coordinate)>1?1:0,Math.round(Number(input.value)||0)));
+  current[2]=Math.min(current[2],item.source.width-current[0]);current[3]=Math.min(current[3],item.source.height-current[1]);paintBoxes(item,index);
+ };
+}

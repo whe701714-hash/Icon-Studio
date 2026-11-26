@@ -1,7 +1,7 @@
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {api} from './icon-api.mjs';
-const files = {'/':'index.html','/studio.css':'studio.css','/studio.mjs':'studio.mjs','/icons.mjs':'icons.mjs','/original.mjs':'original.mjs','/original.css':'original.css'};
+const files = {'/':'index.html','/studio.css':'studio.css','/studio.mjs':'studio.mjs','/icons.mjs':'icons.mjs','/original.mjs':'original.mjs','/original.css':'original.css','/local-tools.mjs':'local-tools.mjs'};
 const types = {html:'text/html',css:'text/css',mjs:'text/javascript'};
 createServer(async (request,response)=>{
   if(request.url.startsWith('/api/'))return api(request,response);
